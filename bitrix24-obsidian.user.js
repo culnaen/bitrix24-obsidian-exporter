@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bitrix24 task comments to Obsidian Daily Notes
 // @namespace    bitrix24-obsidian-exporter
-// @version      1.1.0
+// @version      1.1.1
 // @description  Appends successfully submitted Bitrix24 task comments to the current Obsidian daily note.
 // @match        https://*/*
 // @run-at       document-start
@@ -18,6 +18,7 @@
         'task.comment.add',
         'task.commentitem.add',
         'tasks.task.chat.message.send',
+        'bitrix:forum.comments.processcomment',
     ]);
 
     const nativeFetch = window.fetch?.bind(window);
@@ -39,9 +40,16 @@
     }
 
     function showLaunchLink(uri) {
-        document.getElementById('bitrix24-obsidian-link')?.remove();
+        let targetDocument = document;
+        try {
+            targetDocument = window.top.document;
+        } catch {
+            // Cross-origin frames must render the link in their own document.
+        }
 
-        const panel = document.createElement('div');
+        targetDocument.getElementById('bitrix24-obsidian-link')?.remove();
+
+        const panel = targetDocument.createElement('div');
         panel.id = 'bitrix24-obsidian-link';
         Object.assign(panel.style, {
             position: 'fixed',
@@ -57,10 +65,10 @@
             font: '14px/1.4 sans-serif',
         });
 
-        const message = document.createElement('span');
+        const message = targetDocument.createElement('span');
         message.textContent = 'Комментарий принят Bitrix24. ';
 
-        const link = document.createElement('a');
+        const link = targetDocument.createElement('a');
         link.href = uri;
         link.textContent = 'Открыть Obsidian';
         Object.assign(link.style, {
@@ -70,7 +78,7 @@
         });
 
         panel.append(message, link);
-        (document.body || document.documentElement).append(panel);
+        (targetDocument.body || targetDocument.documentElement).append(panel);
         window.setTimeout(() => panel.remove(), 15000);
         return link;
     }
@@ -102,6 +110,11 @@
         }
     }
 
+    function isEntryListBody(value) {
+        const tag = Object.prototype.toString.call(value);
+        return tag === '[object URLSearchParams]' || tag === '[object FormData]';
+    }
+
     async function parseBody(body) {
         if (body == null) {
             return null;
@@ -109,7 +122,7 @@
         if (typeof body === 'string') {
             return parseStringBody(body);
         }
-        if (body instanceof URLSearchParams || body instanceof FormData) {
+        if (isEntryListBody(body)) {
             return body;
         }
         if (body instanceof Blob) {
@@ -128,7 +141,7 @@
     }
 
     function entriesOf(value) {
-        if (value instanceof URLSearchParams || value instanceof FormData) {
+        if (isEntryListBody(value)) {
             return Array.from(value.entries());
         }
         return value && typeof value === 'object' ? Object.entries(value) : [];
@@ -172,6 +185,11 @@
         }
 
         const queryAction = parsedUrl.searchParams.get('action');
+        const controller = parsedUrl.searchParams.get('c');
+        if (controller?.toLowerCase() === 'bitrix:forum.comments'
+            && queryAction?.toLowerCase() === 'processcomment') {
+            return 'bitrix:forum.comments.processcomment';
+        }
         if (queryAction) {
             return queryAction.toLowerCase().replace(/\.json$/i, '');
         }
@@ -186,7 +204,20 @@
     }
 
     function commentFrom(payload) {
-        return findValue(payload, /(?:^|\[)(?:post_message|commenttext|comment_text|message|text)\]?$/i);
+        return findValue(payload, /(?:^|\[)(?:post_message|review_text|commenttext|comment_text|message|text)\]?$/i);
+    }
+
+    function isTaskCommentPayload(payload, action) {
+        if (action !== 'bitrix:forum.comments.processcomment') {
+            return true;
+        }
+
+        const operation = findValue(payload, /(?:^|\[)action\]?$/i);
+        const entityType = findValue(payload, /(?:^|\[)entity_type\]?$/i);
+        const entityXmlId = findValue(payload, /(?:^|\[)entity_xml_id\]?$/i);
+
+        return operation?.toUpperCase() === 'ADD'
+            && (entityType?.toUpperCase() === 'TK' || /^TASK_\d+$/i.test(entityXmlId ?? ''));
     }
 
     async function taskComment(url, method, body) {
@@ -196,7 +227,7 @@
 
         const payload = await parseBody(body);
         const action = actionFrom(url, payload);
-        if (!TASK_COMMENT_ACTIONS.has(action)) {
+        if (!TASK_COMMENT_ACTIONS.has(action) || !isTaskCommentPayload(payload, action)) {
             return null;
         }
 
