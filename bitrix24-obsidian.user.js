@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bitrix24 task comments to Obsidian Daily Notes
 // @namespace    bitrix24-obsidian-exporter
-// @version      1.1.1
+// @version      1.1.2
 // @description  Appends successfully submitted Bitrix24 task comments to the current Obsidian daily note.
 // @match        https://*/*
 // @run-at       document-start
@@ -11,8 +11,15 @@
 
 (() => {
     'use strict';
+    const INSTALLATION_MARKER = '__bitrix24ObsidianInstalled';
+    if (window[INSTALLATION_MARKER]) {
+        return;
+    }
+    Object.defineProperty(window, INSTALLATION_MARKER, { value: true });
 
     const DAILY_NOTE_DIRECTORY = '03-Daily';
+    const DEDUPLICATION_INTERVAL_MS = 5000;
+    const LAST_EXPORT_STORAGE_KEY = 'bitrix24-obsidian:last-export';
     const TASK_COMMENT_ACTIONS = new Set([
         'tasks.task.comment.add',
         'task.comment.add',
@@ -39,7 +46,7 @@
         return `\n- ${pad(date.getHours())}:${pad(date.getMinutes())} ${value}`;
     }
 
-    function showLaunchLink(uri) {
+    function showSuccessNotification() {
         let targetDocument = document;
         try {
             targetDocument = window.top.document;
@@ -47,10 +54,10 @@
             // Cross-origin frames must render the link in their own document.
         }
 
-        targetDocument.getElementById('bitrix24-obsidian-link')?.remove();
+        targetDocument.getElementById('bitrix24-obsidian-notification')?.remove();
 
         const panel = targetDocument.createElement('div');
-        panel.id = 'bitrix24-obsidian-link';
+        panel.id = 'bitrix24-obsidian-notification';
         Object.assign(panel.style, {
             position: 'fixed',
             right: '20px',
@@ -66,35 +73,57 @@
         });
 
         const message = targetDocument.createElement('span');
-        message.textContent = 'Комментарий принят Bitrix24. ';
+        message.textContent = 'Комментарий успешно передан в Obsidian';
 
-        const link = targetDocument.createElement('a');
-        link.href = uri;
-        link.textContent = 'Открыть Obsidian';
-        Object.assign(link.style, {
-            color: '#c4b5fd',
-            fontWeight: '600',
-            textDecoration: 'underline',
-        });
-
-        panel.append(message, link);
+        panel.append(message);
         (targetDocument.body || targetDocument.documentElement).append(panel);
-        window.setTimeout(() => panel.remove(), 15000);
-        return link;
+        window.setTimeout(() => panel.remove(), 5000);
+    }
+
+    function claimExport(comment) {
+        const current = { comment, timestamp: Date.now() };
+
+        try {
+            const storage = window.top.sessionStorage;
+            const previous = JSON.parse(storage.getItem(LAST_EXPORT_STORAGE_KEY));
+            if (previous?.comment === comment
+                && current.timestamp - previous.timestamp < DEDUPLICATION_INTERVAL_MS) {
+                return false;
+            }
+            storage.setItem(LAST_EXPORT_STORAGE_KEY, JSON.stringify(current));
+        } catch {
+            // If storage is unavailable, the installation marker still prevents same-frame duplicates.
+        }
+
+        return true;
+    }
+
+    function encodeQuery(parameters) {
+        return Object.entries(parameters)
+            .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
+            .join('&');
     }
 
     function openObsidian(comment) {
+        if (!claimExport(comment)) {
+            return;
+        }
+
         const date = new Date();
-        const parameters = new URLSearchParams({
+        const uri = `obsidian://new?${encodeQuery({
             file: dailyNotePath(date),
             content: formatEntry(comment, date),
             append: 'true',
-        });
-        const uri = `obsidian://new?${parameters.toString()}`;
-        const link = showLaunchLink(uri);
+        })}`;
+        const link = document.createElement('a');
+        link.href = uri;
+        link.style.display = 'none';
+        (document.body || document.documentElement).append(link);
 
-        console.info('[Bitrix24 → Obsidian] Комментарий принят, открываю Obsidian.');
+        console.info('[Bitrix24 → Obsidian] Комментарий успешно передан в Obsidian.');
         link.click();
+        link.remove();
+        showSuccessNotification();
     }
 
     function parseStringBody(body) {
