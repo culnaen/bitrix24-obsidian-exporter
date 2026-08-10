@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         Bitrix24 task comments to Obsidian Daily Notes
 // @namespace    bitrix24-obsidian-exporter
-// @version      1.0.0
+// @version      1.1.0
 // @description  Appends successfully submitted Bitrix24 task comments to the current Obsidian daily note.
-// @include      /^https:\/\/[^/]+\.bitrix24\.(?:com(?:\.br)?|ru|by|kz|ua|eu|de|fr|it|pl|es|in|tr|cn)\//
+// @match        https://*/*
 // @run-at       document-start
+// @sandbox      raw
 // @grant        none
 // ==/UserScript==
 
@@ -14,6 +15,7 @@
     const DAILY_NOTE_DIRECTORY = '03-Daily';
     const TASK_COMMENT_ACTIONS = new Set([
         'tasks.task.comment.add',
+        'task.comment.add',
         'task.commentitem.add',
         'tasks.task.chat.message.send',
     ]);
@@ -36,6 +38,43 @@
         return `\n- ${pad(date.getHours())}:${pad(date.getMinutes())} ${value}`;
     }
 
+    function showLaunchLink(uri) {
+        document.getElementById('bitrix24-obsidian-link')?.remove();
+
+        const panel = document.createElement('div');
+        panel.id = 'bitrix24-obsidian-link';
+        Object.assign(panel.style, {
+            position: 'fixed',
+            right: '20px',
+            bottom: '20px',
+            zIndex: '2147483647',
+            padding: '12px 16px',
+            border: '1px solid #7c3aed',
+            borderRadius: '8px',
+            background: '#18181b',
+            color: '#fafafa',
+            boxShadow: '0 8px 24px rgba(0, 0, 0, 0.35)',
+            font: '14px/1.4 sans-serif',
+        });
+
+        const message = document.createElement('span');
+        message.textContent = 'Комментарий принят Bitrix24. ';
+
+        const link = document.createElement('a');
+        link.href = uri;
+        link.textContent = 'Открыть Obsidian';
+        Object.assign(link.style, {
+            color: '#c4b5fd',
+            fontWeight: '600',
+            textDecoration: 'underline',
+        });
+
+        panel.append(message, link);
+        (document.body || document.documentElement).append(panel);
+        window.setTimeout(() => panel.remove(), 15000);
+        return link;
+    }
+
     function openObsidian(comment) {
         const date = new Date();
         const parameters = new URLSearchParams({
@@ -43,8 +82,11 @@
             content: formatEntry(comment, date),
             append: 'true',
         });
+        const uri = `obsidian://new?${parameters.toString()}`;
+        const link = showLaunchLink(uri);
 
-        window.location.assign(`obsidian://new?${parameters.toString()}`);
+        console.info('[Bitrix24 → Obsidian] Комментарий принят, открываю Obsidian.');
+        link.click();
     }
 
     function parseStringBody(body) {
@@ -109,6 +151,11 @@
                 }
                 if (value && typeof value === 'object') {
                     queue.push(value);
+                } else if (typeof value === 'string' && /^[\s]*[\[{]/.test(value)) {
+                    const nested = parseStringBody(value);
+                    if (nested && typeof nested === 'object') {
+                        queue.push(nested);
+                    }
                 }
             }
         }
@@ -134,21 +181,12 @@
             return bodyAction.toLowerCase().replace(/\.json$/i, '');
         }
 
-        const pathMatch = parsedUrl.pathname.match(/(?:^|\/)(tasks\.task\.comment\.add|task\.commentitem\.add|tasks\.task\.chat\.message\.send)(?:\.json)?(?:$|\/)/i);
+        const pathMatch = parsedUrl.pathname.match(/(?:^|\/)(tasks\.task\.comment\.add|task\.commentitem\.add|task\.comment\.add|tasks\.task\.chat\.message\.send)(?:\.json)?(?:$|\/)/i);
         return pathMatch?.[1].toLowerCase() ?? null;
     }
 
-    function commentFrom(payload, action) {
-        const postMessage = findValue(payload, /(?:^|\[)post_message\]?$/i);
-        if (postMessage) {
-            return postMessage;
-        }
-
-        if (action === 'tasks.task.chat.message.send') {
-            return findValue(payload, /(?:^|\[)(?:message|text)\]?$/i);
-        }
-
-        return null;
+    function commentFrom(payload) {
+        return findValue(payload, /(?:^|\[)(?:post_message|commenttext|comment_text|message|text)\]?$/i);
     }
 
     async function taskComment(url, method, body) {
@@ -162,7 +200,11 @@
             return null;
         }
 
-        return commentFrom(payload, action);
+        const comment = commentFrom(payload);
+        if (!comment) {
+            console.warn(`[Bitrix24 → Obsidian] Запрос ${action} найден, но текст комментария не распознан.`);
+        }
+        return comment;
     }
 
     function apiResponseSucceeded(payload) {
@@ -214,7 +256,9 @@
                         openObsidian(comment);
                     }
                 })
-                .catch(() => {});
+                .catch((error) => {
+                    console.warn('[Bitrix24 → Obsidian] Не удалось обработать fetch-запрос.', error);
+                });
 
             return responsePromise;
         };
@@ -248,6 +292,8 @@
 
                 if (apiResponseSucceeded(payload)) {
                     openObsidian(comment);
+                } else {
+                    console.warn('[Bitrix24 → Obsidian] Bitrix24 отклонил комментарий.');
                 }
             }, { once: true });
         }
