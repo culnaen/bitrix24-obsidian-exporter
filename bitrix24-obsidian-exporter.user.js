@@ -185,13 +185,14 @@
         const payload = new URLSearchParams(body);
         const entityXmlId = payload.get('ENTITY_XML_ID');
         const taskId = entityXmlId?.match(/^TASK_(\d+)$/i)?.[1] ?? null;
-        if (payload.get('action')?.toUpperCase() !== 'ADD'
+        const action = payload.get('action') ?? payload.get('ACTION');
+        if (action?.toUpperCase() !== 'ADD'
             || payload.get('ENTITY_TYPE')?.toUpperCase() !== 'TK'
             || !taskId) {
             return null;
         }
 
-        const comment = payload.get('POST_MESSAGE')?.trim();
+        const comment = (payload.get('POST_MESSAGE') || payload.get('REVIEW_TEXT'))?.trim();
         if (!comment) {
             console.warn('[Bitrix24 → Obsidian] Текст комментария не распознан.');
             return null;
