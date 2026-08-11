@@ -18,15 +18,14 @@ Tested only with Bitrix forum comments: an `XMLHttpRequest` `POST` to `/bitrix/s
 ## Install in Tampermonkey
 
 1. Install the [Tampermonkey browser extension](https://www.tampermonkey.net/).
-2. Open the extension dashboard, select **Create a new script**, then delete the generated template.
-3. Open [`main.js`](./main.js), copy its entire contents, paste it into the Tampermonkey editor, and press **File → Save** (`Ctrl+S` / `⌘S`).
-4. Open a Bitrix24 task, submit a comment, and allow the browser or operating system to open the `obsidian://` link when prompted.
+2. Click **[Install the userscript](https://culnaen.github.io/bitrix24-obsidian-exporter/bitrix24-obsidian-exporter.user.js)** and confirm the installation in Tampermonkey.
+3. Open a Bitrix24 task, submit a comment, and allow the browser or operating system to open the `obsidian://` link when prompted.
 
-Obsidian must be installed and configured to handle its URI scheme. Violentmonkey and compatible userscript managers can install the same `main.js` file.
+Obsidian must be installed and configured to handle its URI scheme. Violentmonkey and compatible userscript managers can use the same link.
 
 ## Configuration
 
-Edit `DAILY_NOTE_DIRECTORY` in `main.js` if your vault uses another directory. The script constructs dates using the browser's local time.
+Edit `DAILY_NOTE_DIRECTORY` in `bitrix24-obsidian-exporter.user.js` if your vault uses another directory. The script constructs dates using the browser's local time.
 
 ### Self-hosted Bitrix
 
@@ -49,7 +48,7 @@ Do not install this script on a portal unless you are authorized to copy its com
 The project has no build step or runtime dependencies. Validate syntax with:
 
 ```sh
-node --check main.js
+node --check bitrix24-obsidian-exporter.user.js
 ```
 
 ## License
