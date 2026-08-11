@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bitrix24 task comments to Obsidian Daily Notes
 // @namespace    bitrix24-obsidian-exporter
-// @version      1.2.2
+// @version      1.3.0
 // @description  Appends successfully submitted Bitrix24 task comments to the current Obsidian daily note.
 // @match        https://*.bitrix24.*/*
 // @run-at       document-start
@@ -20,15 +20,8 @@
     const DAILY_NOTE_DIRECTORY = '03-Daily';
     const DEDUPLICATION_INTERVAL_MS = 5000;
     const LAST_EXPORT_STORAGE_KEY = 'bitrix24-obsidian:last-export';
-    const TASK_COMMENT_ACTIONS = new Set([
-        'tasks.task.comment.add',
-        'task.comment.add',
-        'task.commentitem.add',
-        'tasks.task.chat.message.send',
-        'bitrix:forum.comments.processcomment',
-    ]);
-
-    const nativeFetch = window.fetch?.bind(window);
+    const FORUM_COMMENTS_CONTROLLER = 'bitrix:forum.comments';
+    const FORUM_COMMENTS_ACTION = 'processcomment';
     const nativeXhrOpen = XMLHttpRequest.prototype.open;
     const nativeXhrSend = XMLHttpRequest.prototype.send;
     const xhrRequests = new WeakMap();
@@ -169,159 +162,39 @@
         showSuccessNotification();
     }
 
-    function parseStringBody(body) {
-        const trimmed = body.trim();
-        if (!trimmed) {
-            return null;
-        }
-
-        try {
-            return JSON.parse(trimmed);
-        } catch {
-            return new URLSearchParams(trimmed);
-        }
-    }
-
-    function isEntryListBody(value) {
-        const tag = Object.prototype.toString.call(value);
-        return tag === '[object URLSearchParams]' || tag === '[object FormData]';
-    }
-
-    async function parseBody(body) {
-        if (body == null) {
-            return null;
-        }
-        if (typeof body === 'string') {
-            return parseStringBody(body);
-        }
-        if (isEntryListBody(body)) {
-            return body;
-        }
-        if (body instanceof Blob) {
-            return parseStringBody(await body.text());
-        }
-        if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) {
-            const bytes = body instanceof ArrayBuffer
-                ? new Uint8Array(body)
-                : new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
-            return parseStringBody(new TextDecoder().decode(bytes));
-        }
-        if (typeof body === 'object') {
-            return body;
-        }
-        return null;
-    }
-
-    function entriesOf(value) {
-        if (isEntryListBody(value)) {
-            return Array.from(value.entries());
-        }
-        return value && typeof value === 'object' ? Object.entries(value) : [];
-    }
-
-    function findValue(payload, keyPattern) {
-        const queue = [payload];
-        const visited = new Set();
-
-        while (queue.length > 0) {
-            const current = queue.shift();
-            if (!current || typeof current !== 'object' || visited.has(current)) {
-                continue;
-            }
-            visited.add(current);
-
-            for (const [key, value] of entriesOf(current)) {
-                if (keyPattern.test(key) && typeof value === 'string' && value.trim()) {
-                    return value;
-                }
-                if (value && typeof value === 'object') {
-                    queue.push(value);
-                } else if (typeof value === 'string' && /^[\s]*[\[{]/.test(value)) {
-                    const nested = parseStringBody(value);
-                    if (nested && typeof nested === 'object') {
-                        queue.push(nested);
-                    }
-                }
-            }
-        }
-
-        return null;
-    }
-
-    function actionFrom(url, payload) {
-        let parsedUrl;
-        try {
-            parsedUrl = new URL(url, window.location.href);
-        } catch {
-            return null;
-        }
-
-        const queryAction = parsedUrl.searchParams.get('action');
-        const controller = parsedUrl.searchParams.get('c');
-        if (controller?.toLowerCase() === 'bitrix:forum.comments'
-            && queryAction?.toLowerCase() === 'processcomment') {
-            return 'bitrix:forum.comments.processcomment';
-        }
-        if (queryAction) {
-            return queryAction.toLowerCase().replace(/\.json$/i, '');
-        }
-
-        const bodyAction = findValue(payload, /(?:^|\[)action\]?$/i);
-        if (bodyAction) {
-            return bodyAction.toLowerCase().replace(/\.json$/i, '');
-        }
-
-        const pathMatch = parsedUrl.pathname.match(/(?:^|\/)(tasks\.task\.comment\.add|task\.commentitem\.add|task\.comment\.add|tasks\.task\.chat\.message\.send)(?:\.json)?(?:$|\/)/i);
-        return pathMatch?.[1].toLowerCase() ?? null;
-    }
-
-    function commentFrom(payload) {
-        return findValue(payload, /(?:^|\[)(?:post_message|review_text|commenttext|comment_text|message|text)\]?$/i);
-    }
-
-    function taskIdFrom(payload) {
-        const directId = findValue(payload, /(?:^|\[)(?:entity_id|task_?id)\]?$/i);
-        if (/^\d+$/.test(directId ?? '')) {
-            return directId;
-        }
-
-        const entityXmlId = findValue(payload, /(?:^|\[)entity_xml_id\]?$/i);
-        return entityXmlId?.match(/^TASK_(\d+)$/i)?.[1] ?? null;
-    }
-
-    function isTaskCommentPayload(payload, action) {
-        if (action !== 'bitrix:forum.comments.processcomment') {
-            return true;
-        }
-
-        const operation = findValue(payload, /(?:^|\[)action\]?$/i);
-        const entityType = findValue(payload, /(?:^|\[)entity_type\]?$/i);
-        const entityXmlId = findValue(payload, /(?:^|\[)entity_xml_id\]?$/i);
-
-        return operation?.toUpperCase() === 'ADD'
-            && (entityType?.toUpperCase() === 'TK' || /^TASK_\d+$/i.test(entityXmlId ?? ''));
-    }
-
-    async function taskComment(url, method, body) {
+    function isForumCommentRequest(url, method) {
         if (String(method || 'GET').toUpperCase() !== 'POST') {
+            return false;
+        }
+
+        try {
+            const endpoint = new URL(url, window.location.href);
+            return endpoint.pathname === '/bitrix/services/main/ajax.php'
+                && endpoint.searchParams.get('c')?.toLowerCase() === FORUM_COMMENTS_CONTROLLER
+                && endpoint.searchParams.get('action')?.toLowerCase() === FORUM_COMMENTS_ACTION;
+        } catch {
+            return false;
+        }
+    }
+
+    function taskComment(url, method, body) {
+        if (!isForumCommentRequest(url, method) || typeof body !== 'string') {
             return null;
         }
 
-        const payload = await parseBody(body);
-        const action = actionFrom(url, payload);
-        if (!TASK_COMMENT_ACTIONS.has(action) || !isTaskCommentPayload(payload, action)) {
+        const payload = new URLSearchParams(body);
+        const entityXmlId = payload.get('ENTITY_XML_ID');
+        const taskId = entityXmlId?.match(/^TASK_(\d+)$/i)?.[1] ?? null;
+        if (payload.get('action')?.toUpperCase() !== 'ADD'
+            || payload.get('ENTITY_TYPE')?.toUpperCase() !== 'TK'
+            || !taskId) {
             return null;
         }
 
-        const comment = commentFrom(payload);
+        const comment = payload.get('POST_MESSAGE')?.trim();
         if (!comment) {
-            console.warn(`[Bitrix24 → Obsidian] Запрос ${action} найден, но текст комментария не распознан.`);
+            console.warn('[Bitrix24 → Obsidian] Текст комментария не распознан.');
             return null;
-        }
-
-        const taskId = taskIdFrom(payload);
-        if (!taskId) {
-            console.warn(`[Bitrix24 → Obsidian] Запрос ${action} найден, но номер задачи не распознан.`);
         }
 
         return { comment, taskId };
@@ -337,55 +210,11 @@
             && !(Array.isArray(payload.errors) && payload.errors.length > 0);
     }
 
-    async function fetchResponseSucceeded(response) {
-        if (!response.ok) {
-            return false;
-        }
-
-        try {
-            return apiResponseSucceeded(await response.clone().json());
-        } catch {
-            return true;
-        }
-    }
-
-    async function fetchBody(input, init) {
-        if (init?.body != null) {
-            return init.body;
-        }
-        if (typeof Request !== 'undefined' && input instanceof Request) {
-            try {
-                return await input.clone().text();
-            } catch {
-                return null;
-            }
-        }
-        return null;
-    }
-
-    if (nativeFetch) {
-        window.fetch = function interceptedFetch(input, init) {
-            const url = typeof input === 'string' || input instanceof URL ? String(input) : input.url;
-            const method = init?.method ?? input?.method ?? 'GET';
-            const entryPromise = fetchBody(input, init).then((body) => taskComment(url, method, body));
-            const responsePromise = nativeFetch(input, init);
-
-            void Promise.all([entryPromise, responsePromise])
-                .then(async ([entry, response]) => {
-                    if (entry && await fetchResponseSucceeded(response)) {
-                        openObsidian(entry);
-                    }
-                })
-                .catch((error) => {
-                    console.warn('[Bitrix24 → Obsidian] Не удалось обработать fetch-запрос.', error);
-                });
-
-            return responsePromise;
-        };
-    }
 
     XMLHttpRequest.prototype.open = function interceptedOpen(method, url, ...rest) {
-        xhrRequests.set(this, { method, url: String(url), body: null });
+        if (isForumCommentRequest(url, method)) {
+            xhrRequests.set(this, { method, url: String(url), body: null });
+        }
         return nativeXhrOpen.call(this, method, url, ...rest);
     };
 
@@ -393,12 +222,12 @@
         const request = xhrRequests.get(this);
         if (request) {
             request.body = body;
-            this.addEventListener('loadend', async () => {
+            this.addEventListener('loadend', () => {
                 if (this.status < 200 || this.status >= 300) {
                     return;
                 }
 
-                const entry = await taskComment(request.url, request.method, request.body);
+                const entry = taskComment(request.url, request.method, request.body);
                 if (!entry) {
                     return;
                 }
