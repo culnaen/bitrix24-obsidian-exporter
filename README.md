@@ -13,14 +13,14 @@ After Bitrix24 confirms a supported task-comment request, the script opens an `o
 
 Supported actions are `tasks.task.comment.add`, `task.comment.add`, `task.commentitem.add`, `tasks.task.chat.message.send`, and the Bitrix forum task-comment flow.
 
-## Installation
+## Install in Tampermonkey
 
-1. Install [Violentmonkey](https://violentmonkey.github.io/), Tampermonkey, or another userscript manager.
-2. Create a new userscript and replace its contents with [`main.js`](./main.js).
-3. Save it, then open a Bitrix24 portal and submit a task comment.
-4. Allow your browser and operating system to open `obsidian://` links when prompted.
+1. Install the [Tampermonkey browser extension](https://www.tampermonkey.net/).
+2. Open the extension dashboard, select **Create a new script**, then delete the generated template.
+3. Open [`main.js`](./main.js), copy its entire contents, paste it into the Tampermonkey editor, and press **File → Save** (`Ctrl+S` / `⌘S`).
+4. Open a Bitrix24 task, submit a comment, and allow the browser or operating system to open the `obsidian://` link when prompted.
 
-Obsidian must be installed and configured to handle its URI scheme.
+Obsidian must be installed and configured to handle its URI scheme. Violentmonkey and compatible userscript managers can install the same `main.js` file.
 
 ## Configuration
 
@@ -42,4 +42,4 @@ node --check main.js
 
 ## License
 
-No license has been selected yet. Do not assume permission to reuse, modify, or distribute the code beyond rights granted by applicable law.
+[MIT](./LICENSE)
