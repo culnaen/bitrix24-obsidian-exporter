@@ -11,6 +11,8 @@ After Bitrix24 confirms a supported task-comment request, the script opens an `o
 - `#task/<id>` when the task ID is available;
 - `#company/<name>` when Bitrix24 exposes the linked CRM company on the page.
 
+The `#company/<name>` tag preserves the CRM context of a task comment, so notes can be filtered or found by company in Obsidian without duplicating the company name in the comment text.
+
 Supported actions are `tasks.task.comment.add`, `task.comment.add`, `task.commentitem.add`, `tasks.task.chat.message.send`, and the Bitrix forum task-comment flow.
 
 ## Install in Tampermonkey
