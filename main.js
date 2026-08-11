@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Bitrix24 task comments to Obsidian Daily Notes
 // @namespace    bitrix24-obsidian-exporter
-// @version      1.2.1
+// @version      1.2.2
 // @description  Appends successfully submitted Bitrix24 task comments to the current Obsidian daily note.
-// @match        https://*/*
+// @match        https://*.bitrix24.*/*
 // @run-at       document-start
 // @sandbox      raw
 // @grant        none
@@ -80,7 +80,7 @@
     function formatEntry(entry, date) {
         const value = entry.comment.replace(/\r\n?/g, '\n').trim();
         const tags = [
-            entry.taskId ? `#lasnet/${entry.taskId}` : null,
+            entry.taskId ? `#task/${entry.taskId}` : null,
             companyTag(),
         ].filter(Boolean);
         const tagPrefix = tags.length > 0 ? `${tags.join(' ')} ` : '';
