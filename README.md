@@ -13,7 +13,7 @@ After Bitrix24 confirms a supported task-comment request, the script opens an `o
 
 The `#company/<name>` tag preserves the CRM context of a task comment, so notes can be filtered or found by company in Obsidian without duplicating the company name in the comment text.
 
-Tested only with Bitrix forum comments: an `XMLHttpRequest` `POST` to `/bitrix/services/main/ajax.php?mode=class&c=bitrix%3Aforum.comments&action=processComment` using `application/x-www-form-urlencoded`. The script requires `action=ADD`, `ENTITY_TYPE=TK`, `ENTITY_XML_ID=TASK_<id>`, and `POST_MESSAGE`; other Bitrix APIs, request formats, and `fetch` are not supported.
+Tested with Bitrix forum comments: a `POST` to `/bitrix/services/main/ajax.php?mode=class&c=bitrix%3Aforum.comments&action=processComment` sent through `XMLHttpRequest` or `fetch`. The request body must be URL-encoded and include `action=ADD`, `ENTITY_TYPE=TK`, `ENTITY_XML_ID=TASK_<id>`, and comment text in `POST_MESSAGE` or `REVIEW_TEXT`; other Bitrix APIs and request formats are not supported.
 
 ## Install in Tampermonkey
 
@@ -39,7 +39,7 @@ Replace `bitrixmoeyjfirmy.ru` with your portal domain; for example, `https://bit
 
 ## Privacy and permissions
 
-By default, the script runs only on `https://*.bitrix24.*/*`; self-hosted portals require an explicit `@match` entry. On an enabled portal it observes only the tested Bitrix forum-comment `XMLHttpRequest`. It does not send data to a third-party server. Comment text, task IDs, and available CRM company names are passed only to Obsidian through the local `obsidian://` URI and become content in your vault.
+By default, the script runs only on `https://*.bitrix24.*/*`; self-hosted portals require an explicit `@match` entry. On an enabled portal it observes only the tested Bitrix forum-comment `XMLHttpRequest` and `fetch` requests. It does not send data to a third-party server. Comment text, task IDs, and available CRM company names are passed only to Obsidian through the local `obsidian://` URI and become content in your vault.
 
 Do not install this script on a portal unless you are authorized to copy its comments into your local vault.
 
