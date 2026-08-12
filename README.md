@@ -25,7 +25,9 @@ Obsidian must be installed and configured to handle its URI scheme. Violentmonke
 
 ## Configuration
 
-Edit `DAILY_NOTE_DIRECTORY` in `bitrix24-obsidian-exporter.user.js` if your vault uses another directory. The script constructs dates using the browser's local time.
+In Tampermonkey, open the script's menu on a Bitrix24 page and choose **«Настроить экспорт в Obsidian»**. You can set the daily-note directory, enable or disable task and CRM-company tags, and rename their prefixes. Settings are stored by Tampermonkey and survive userscript updates. The script constructs dates using the browser's local time.
+
+Tag names may contain letters, digits, `_`, `-`, and `/`; do not include the leading `#`. Defaults are `#task/<id>` and `#company/<name>`. **«Сбросить»** restores these defaults and `03-Daily`.
 
 ### Self-hosted Bitrix
 

@@ -1,12 +1,14 @@
 // ==UserScript==
 // @name         Bitrix24 task comments to Obsidian Daily Notes
 // @namespace    bitrix24-obsidian-exporter
-// @version      1.3.1
+// @version      1.4.0
 // @description  Appends successfully submitted Bitrix24 task comments to the current Obsidian daily note.
 // @match        https://*.bitrix24.*/*
 // @run-at       document-start
 // @sandbox      raw
-// @grant        none
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
 // ==/UserScript==
 
 (() => {
@@ -17,7 +19,14 @@
     }
     Object.defineProperty(window, INSTALLATION_MARKER, { value: true });
 
-    const DAILY_NOTE_DIRECTORY = '03-Daily';
+    const DEFAULT_SETTINGS = Object.freeze({
+        dailyNoteDirectory: '03-Daily',
+        includeTaskTag: true,
+        taskTagName: 'task',
+        includeCompanyTag: true,
+        companyTagName: 'company',
+    });
+    const SETTINGS_STORAGE_KEY = 'bitrix24-obsidian:settings';
     const DEDUPLICATION_INTERVAL_MS = 5000;
     const LAST_EXPORT_STORAGE_KEY = 'bitrix24-obsidian:last-export';
     const FORUM_COMMENTS_CONTROLLER = 'bitrix:forum.comments';
@@ -31,8 +40,48 @@
         return String(number).padStart(2, '0');
     }
 
-    function dailyNotePath(date) {
-        return `${DAILY_NOTE_DIRECTORY}/${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}.md`;
+    function dailyNotePath(date, settings) {
+        return `${settings.dailyNoteDirectory}/${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}.md`;
+    }
+
+    function isTagName(value) {
+        return typeof value === 'string'
+            && /^[\p{L}\p{N}_-]+(?:\/[\p{L}\p{N}_-]+)*$/u.test(value);
+    }
+
+    function normalizeSettings(value) {
+        const settings = value && typeof value === 'object' ? value : {};
+        const dailyNoteDirectory = typeof settings.dailyNoteDirectory === 'string'
+            ? settings.dailyNoteDirectory.trim().replace(/^\/+|\/+$/g, '')
+            : '';
+
+        return {
+            dailyNoteDirectory: dailyNoteDirectory || DEFAULT_SETTINGS.dailyNoteDirectory,
+            includeTaskTag: typeof settings.includeTaskTag === 'boolean'
+                ? settings.includeTaskTag
+                : DEFAULT_SETTINGS.includeTaskTag,
+            taskTagName: isTagName(settings.taskTagName)
+                ? settings.taskTagName
+                : DEFAULT_SETTINGS.taskTagName,
+            includeCompanyTag: typeof settings.includeCompanyTag === 'boolean'
+                ? settings.includeCompanyTag
+                : DEFAULT_SETTINGS.includeCompanyTag,
+            companyTagName: isTagName(settings.companyTagName)
+                ? settings.companyTagName
+                : DEFAULT_SETTINGS.companyTagName,
+        };
+    }
+
+    function loadSettings() {
+        try {
+            return normalizeSettings(GM_getValue(SETTINGS_STORAGE_KEY, DEFAULT_SETTINGS));
+        } catch {
+            return DEFAULT_SETTINGS;
+        }
+    }
+
+    function saveSettings(settings) {
+        GM_setValue(SETTINGS_STORAGE_KEY, settings);
     }
 
     function companyNameFromPage() {
@@ -57,7 +106,11 @@
         return null;
     }
 
-    function companyTag() {
+    function companyTag(settings) {
+        if (!settings.includeCompanyTag) {
+            return null;
+        }
+
         const companyName = companyNameFromPage();
         if (!companyName) {
             return null;
@@ -68,14 +121,14 @@
             .replace(/[^\p{L}\p{N}_-]+/gu, '_')
             .replace(/^_+|_+$/g, '');
 
-        return slug ? `#company/${slug}` : null;
+        return slug ? `#${settings.companyTagName}/${slug}` : null;
     }
 
-    function formatEntry(entry, date) {
+    function formatEntry(entry, date, settings) {
         const value = entry.comment.replace(/\r\n?/g, '\n').trim();
         const tags = [
-            entry.taskId ? `#task/${entry.taskId}` : null,
-            companyTag(),
+            settings.includeTaskTag && entry.taskId ? `#${settings.taskTagName}/${entry.taskId}` : null,
+            companyTag(settings),
         ].filter(Boolean);
         const tagPrefix = tags.length > 0 ? `${tags.join(' ')} ` : '';
 
@@ -146,10 +199,11 @@
             return;
         }
 
+        const settings = loadSettings();
         const date = new Date();
         const uri = `obsidian://new?${encodeQuery({
-            file: dailyNotePath(date),
-            content: formatEntry(entry, date),
+            file: dailyNotePath(date, settings),
+            content: formatEntry(entry, date, settings),
             append: 'true',
         })}`;
         const link = document.createElement('a');
@@ -272,6 +326,131 @@
             console.warn('[Bitrix24 → Obsidian] Bitrix24 отклонил комментарий.');
         }
     }
+    function configureSettings() {
+        const settings = loadSettings();
+        const overlay = document.createElement('div');
+        const panel = document.createElement('form');
+        const fields = [
+            ['Каталог daily notes', 'dailyNoteDirectory', 'text'],
+            ['Тег задачи', 'taskTagName', 'text'],
+            ['Тег компании', 'companyTagName', 'text'],
+        ];
+        const inputs = {};
+
+        Object.assign(overlay.style, {
+            position: 'fixed',
+            inset: '0',
+            zIndex: '2147483647',
+            display: 'grid',
+            placeItems: 'center',
+            background: 'rgba(0, 0, 0, 0.55)',
+            font: '14px/1.4 sans-serif',
+        });
+        Object.assign(panel.style, {
+            width: 'min(420px, calc(100vw - 32px))',
+            boxSizing: 'border-box',
+            padding: '20px',
+            borderRadius: '8px',
+            background: '#18181b',
+            color: '#fafafa',
+        });
+
+        const title = document.createElement('h2');
+        title.textContent = 'Экспорт комментариев в Obsidian';
+        title.style.marginTop = '0';
+        panel.append(title);
+
+        for (const [labelText, name, type] of fields) {
+            const label = document.createElement('label');
+            label.textContent = labelText;
+            label.style.display = 'block';
+            label.style.marginTop = '12px';
+            const input = document.createElement('input');
+            input.type = type;
+            input.value = settings[name];
+            input.style.cssText = 'box-sizing:border-box;display:block;margin-top:4px;padding:8px;width:100%;';
+            label.append(input);
+            panel.append(label);
+            inputs[name] = input;
+        }
+
+        for (const [labelText, name] of [['Добавлять тег задачи', 'includeTaskTag'], ['Добавлять тег компании', 'includeCompanyTag']]) {
+            const label = document.createElement('label');
+            label.style.cssText = 'display:block;margin-top:12px;';
+            const input = document.createElement('input');
+            input.type = 'checkbox';
+            input.checked = settings[name];
+            label.append(input, ` ${labelText}`);
+            panel.append(label);
+            inputs[name] = input;
+        }
+        const preview = document.createElement('div');
+        preview.style.cssText = 'margin-top:16px;padding:8px;background:#27272a;border-radius:4px;word-break:break-word;';
+        const updatePreview = () => {
+            const tags = [
+                inputs.includeTaskTag.checked ? `#${inputs.taskTagName.value || 'task'}/123` : null,
+                inputs.includeCompanyTag.checked ? `#${inputs.companyTagName.value || 'company'}/Acme` : null,
+            ].filter(Boolean);
+            preview.textContent = `Пример: 12:34 ${tags.length ? `${tags.join(' ')} ` : ''}Комментарий`;
+        };
+        for (const input of Object.values(inputs)) {
+            input.addEventListener('input', updatePreview);
+            input.addEventListener('change', updatePreview);
+        }
+        updatePreview();
+        panel.append(preview);
+
+
+        const error = document.createElement('div');
+        error.style.cssText = 'color:#fca5a5;margin-top:12px;min-height:20px;';
+        panel.append(error);
+
+        const save = document.createElement('button');
+        save.type = 'submit';
+        save.textContent = 'Сохранить';
+        const reset = document.createElement('button');
+        reset.type = 'button';
+        reset.textContent = 'Сбросить';
+        reset.style.marginLeft = '8px';
+        const cancel = document.createElement('button');
+        cancel.type = 'button';
+        cancel.textContent = 'Отмена';
+        cancel.style.marginLeft = '8px';
+        panel.append(save, reset, cancel);
+
+        cancel.addEventListener('click', () => overlay.remove());
+        reset.addEventListener('click', () => {
+            saveSettings(DEFAULT_SETTINGS);
+            overlay.remove();
+        });
+        panel.addEventListener('submit', (event) => {
+            event.preventDefault();
+            const dailyNoteDirectory = inputs.dailyNoteDirectory.value.trim().replace(/^\/+|\/+$/g, '');
+            if (!dailyNoteDirectory) {
+                error.textContent = 'Укажите каталог daily notes.';
+                return;
+            }
+            if (!isTagName(inputs.taskTagName.value) || !isTagName(inputs.companyTagName.value)) {
+                error.textContent = 'Имя тега: буквы, цифры, _, -, и /; без #.';
+                return;
+            }
+
+            saveSettings({
+                dailyNoteDirectory,
+                includeTaskTag: inputs.includeTaskTag.checked,
+                taskTagName: inputs.taskTagName.value,
+                includeCompanyTag: inputs.includeCompanyTag.checked,
+                companyTagName: inputs.companyTagName.value,
+            });
+            overlay.remove();
+        });
+
+        overlay.append(panel);
+        (document.body || document.documentElement).append(overlay);
+    }
+
+    GM_registerMenuCommand('Настроить экспорт в Obsidian', configureSettings);
+
 
     if (typeof nativeFetch === 'function') {
         window.fetch = async function interceptedFetch(input, init) {
