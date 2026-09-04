@@ -3,6 +3,11 @@
 // @namespace    bitrix24-obsidian-exporter
 // @version      1.4.0
 // @description  Appends successfully submitted Bitrix24 task comments to the current Obsidian daily note.
+// @homepageURL  https://github.com/culnaen/bitrix24-obsidian-exporter
+// @source       https://github.com/culnaen/bitrix24-obsidian-exporter.git
+// @supportURL   https://github.com/culnaen/bitrix24-obsidian-exporter/issues
+// @downloadURL  https://raw.githubusercontent.com/culnaen/bitrix24-obsidian-exporter/main/bitrix24-obsidian-exporter.user.js
+// @updateURL    https://raw.githubusercontent.com/culnaen/bitrix24-obsidian-exporter/main/bitrix24-obsidian-exporter.user.js
 // @match        https://*.bitrix24.*/*
 // @run-at       document-start
 // @sandbox      raw
