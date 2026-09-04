@@ -7,12 +7,13 @@ const script = readFileSync('bitrix24-obsidian-exporter.user.js', 'utf8');
 const endpoint = 'https://acme.bitrix24.ru/bitrix/services/main/ajax.php?c=bitrix%3Aforum.comments&action=processcomment';
 const commentBody = 'ENTITY_XML_ID=TASK_42&ENTITY_TYPE=TK&action=ADD&POST_MESSAGE=exported+comment';
 
-function createEnvironment({ payload = { status: 'success' }, settings } = {}) {
+function createEnvironment({ payload = { status: 'success' }, settings, isTopFrame = true } = {}) {
     const openedUris = [];
     const storage = new Map();
     const scriptStorage = new Map();
     const eventListeners = new WeakMap();
     const menuCommands = new Map();
+    const metrics = { menuRegistrationCount: 0 };
 
     if (settings) {
         scriptStorage.set('bitrix24-obsidian:settings', settings);
@@ -47,9 +48,19 @@ function createEnvironment({ payload = { status: 'success' }, settings } = {}) {
         }
     }
 
+    const attributes = new Set();
+    const documentElement = {
+        append() {},
+        hasAttribute(name) {
+            return attributes.has(name);
+        },
+        setAttribute(name) {
+            attributes.add(name);
+        },
+    };
     const document = {
         body: { append() {} },
-        documentElement: { append() {} },
+        documentElement,
         createElement() {
             return {
                 style: {},
@@ -73,6 +84,10 @@ function createEnvironment({ payload = { status: 'success' }, settings } = {}) {
     const window = {
         document,
         location: { href: 'https://acme.bitrix24.ru/tasks/task/view/42/' },
+        requestAnimationFrame(callback) {
+            callback();
+            return 1;
+        },
         sessionStorage: {
             getItem(key) {
                 return storage.get(key) ?? null;
@@ -89,14 +104,21 @@ function createEnvironment({ payload = { status: 'success' }, settings } = {}) {
             });
         },
     };
-    window.top = window;
+    window.top = isTopFrame ? window : {};
 
-    vm.runInNewContext(script, {
+    class MockMutationObserver {
+        disconnect() {}
+
+        observe() {}
+    }
+
+    const context = {
         Request,
         Response,
         URL,
         URLSearchParams,
         WeakMap,
+        MutationObserver: MockMutationObserver,
         XMLHttpRequest: MockXMLHttpRequest,
         GM_getValue(key, defaultValue) {
             return scriptStorage.get(key) ?? defaultValue;
@@ -105,14 +127,25 @@ function createEnvironment({ payload = { status: 'success' }, settings } = {}) {
             scriptStorage.set(key, value);
         },
         GM_registerMenuCommand(name, callback) {
+            metrics.menuRegistrationCount += 1;
             menuCommands.set(name, callback);
         },
         console: { info() {}, warn() {} },
         document,
         window,
-    });
+    };
+    const run = () => vm.runInNewContext(script, context);
+    run();
 
-    return { MockXMLHttpRequest, menuCommands, openedUris, scriptStorage, window };
+    return {
+        MockXMLHttpRequest,
+        menuCommands,
+        metrics,
+        openedUris,
+        run,
+        scriptStorage,
+        window,
+    };
 }
 
 function assertExported(uri) {
@@ -121,6 +154,27 @@ function assertExported(uri) {
     assert.match(query.get('file'), /^03-Daily\/\d{4}-\d{2}-\d{2}\.md$/);
     assert.match(query.get('content'), /#task\/42 exported comment/);
 }
+
+test('installs once when the userscript executes repeatedly', () => {
+    const { metrics, run, window } = createEnvironment();
+    const interceptedFetch = window.fetch;
+
+    run();
+
+    assert.equal(metrics.menuRegistrationCount, 1);
+    assert.equal(window.fetch, interceptedFetch);
+});
+
+test('does not install in a nested frame', () => {
+    const { MockXMLHttpRequest, menuCommands, openedUris } = createEnvironment({ isTopFrame: false });
+    const xhr = new MockXMLHttpRequest();
+
+    xhr.open('POST', endpoint);
+    xhr.send(commentBody);
+
+    assert.equal(menuCommands.size, 0);
+    assert.equal(openedUris.length, 0);
+});
 
 test('exports a successful task comment sent through XMLHttpRequest', () => {
     const { MockXMLHttpRequest, menuCommands, openedUris } = createEnvironment();

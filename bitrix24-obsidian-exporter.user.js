@@ -13,11 +13,12 @@
 
 (() => {
     'use strict';
-    const INSTALLATION_MARKER = '__bitrix24ObsidianInstalled';
-    if (window[INSTALLATION_MARKER]) {
+    const INSTALLATION_MARKER = 'data-bitrix24-obsidian-exporter-installed';
+    if (window.top !== window
+        || document.documentElement?.hasAttribute(INSTALLATION_MARKER)) {
         return;
     }
-    Object.defineProperty(window, INSTALLATION_MARKER, { value: true });
+    document.documentElement.setAttribute(INSTALLATION_MARKER, '');
 
     const DEFAULT_SETTINGS = Object.freeze({
         dailyNoteDirectory: '03-Daily',
@@ -449,55 +450,80 @@
         (document.body || document.documentElement).append(overlay);
     }
 
-    GM_registerMenuCommand('Настроить экспорт в Obsidian', configureSettings);
+    function install() {
+        GM_registerMenuCommand('Настроить экспорт в Obsidian', configureSettings);
 
+        if (typeof nativeFetch === 'function') {
+            window.fetch = async function interceptedFetch(input, init) {
+                const request = fetchCommentRequest(input, init);
+                const response = await nativeFetch.call(this, input, init);
+                await handleFetchComment(request, response);
+                return response;
+            };
+        }
 
-    if (typeof nativeFetch === 'function') {
-        window.fetch = async function interceptedFetch(input, init) {
-            const request = fetchCommentRequest(input, init);
-            const response = await nativeFetch.call(this, input, init);
-            await handleFetchComment(request, response);
-            return response;
+        XMLHttpRequest.prototype.open = function interceptedOpen(method, url, ...rest) {
+            if (isForumCommentRequest(url, method)) {
+                xhrRequests.set(this, { method, url: String(url), body: null });
+            }
+            return nativeXhrOpen.call(this, method, url, ...rest);
+        };
+
+        XMLHttpRequest.prototype.send = function interceptedSend(body) {
+            const request = xhrRequests.get(this);
+            if (request) {
+                request.body = body;
+                this.addEventListener('loadend', () => {
+                    if (this.status < 200 || this.status >= 300) {
+                        return;
+                    }
+
+                    const entry = taskComment(request.url, request.method, request.body);
+                    if (!entry) {
+                        return;
+                    }
+
+                    let payload = null;
+                    try {
+                        payload = this.responseType === 'json' ? this.response : JSON.parse(this.responseText);
+                    } catch {
+                        // A successful non-JSON response is accepted.
+                    }
+
+                    if (apiResponseSucceeded(payload)) {
+                        openObsidian(entry);
+                    } else {
+                        console.warn('[Bitrix24 → Obsidian] Bitrix24 отклонил комментарий.');
+                    }
+                }, { once: true });
+            }
+
+            return nativeXhrSend.call(this, body);
         };
     }
 
+    let installed = false;
+    let initializationQueued = false;
+    const observer = new MutationObserver(queueInitialization);
 
-    XMLHttpRequest.prototype.open = function interceptedOpen(method, url, ...rest) {
-        if (isForumCommentRequest(url, method)) {
-            xhrRequests.set(this, { method, url: String(url), body: null });
-        }
-        return nativeXhrOpen.call(this, method, url, ...rest);
-    };
-
-    XMLHttpRequest.prototype.send = function interceptedSend(body) {
-        const request = xhrRequests.get(this);
-        if (request) {
-            request.body = body;
-            this.addEventListener('loadend', () => {
-                if (this.status < 200 || this.status >= 300) {
-                    return;
-                }
-
-                const entry = taskComment(request.url, request.method, request.body);
-                if (!entry) {
-                    return;
-                }
-
-                let payload = null;
-                try {
-                    payload = this.responseType === 'json' ? this.response : JSON.parse(this.responseText);
-                } catch {
-                    // A successful non-JSON response is accepted.
-                }
-
-                if (apiResponseSucceeded(payload)) {
-                    openObsidian(entry);
-                } else {
-                    console.warn('[Bitrix24 → Obsidian] Bitrix24 отклонил комментарий.');
-                }
-            }, { once: true });
+    function queueInitialization() {
+        if (installed || initializationQueued) {
+            return;
         }
 
-        return nativeXhrSend.call(this, body);
-    };
+        initializationQueued = true;
+        window.requestAnimationFrame(() => {
+            initializationQueued = false;
+            if (installed) {
+                return;
+            }
+
+            installed = true;
+            observer.disconnect();
+            install();
+        });
+    }
+
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+    queueInitialization();
 })();
