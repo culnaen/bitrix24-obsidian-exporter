@@ -9,6 +9,7 @@
 // @downloadURL  https://raw.githubusercontent.com/culnaen/bitrix24-obsidian-exporter/main/bitrix24-obsidian-exporter.user.js
 // @updateURL    https://raw.githubusercontent.com/culnaen/bitrix24-obsidian-exporter/main/bitrix24-obsidian-exporter.user.js
 // @match        https://*.bitrix24.*/*
+// @match        https://*/company/personal/user/*/tasks/*
 // @run-at       document-start
 // @sandbox      raw
 // @grant        GM_getValue
