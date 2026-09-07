@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bitrix24 task comments to Obsidian Daily Notes
 // @namespace    bitrix24-obsidian-exporter
-// @version      1.4.0
+// @version      1.4.1
 // @description  Appends successfully submitted Bitrix24 task comments to the current Obsidian daily note.
 // @homepageURL  https://github.com/culnaen/bitrix24-obsidian-exporter
 // @source       https://github.com/culnaen/bitrix24-obsidian-exporter.git
@@ -10,6 +10,7 @@
 // @updateURL    https://raw.githubusercontent.com/culnaen/bitrix24-obsidian-exporter/main/bitrix24-obsidian-exporter.user.js
 // @match        https://*.bitrix24.*/*
 // @match        https://*/company/personal/user/*/tasks/*
+// @noframes
 // @run-at       document-start
 // @sandbox      raw
 // @grant        GM_getValue
