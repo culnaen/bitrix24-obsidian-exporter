@@ -508,28 +508,5 @@
         };
     }
 
-    let installed = false;
-    let initializationQueued = false;
-    const observer = new MutationObserver(queueInitialization);
-
-    function queueInitialization() {
-        if (installed || initializationQueued) {
-            return;
-        }
-
-        initializationQueued = true;
-        window.requestAnimationFrame(() => {
-            initializationQueued = false;
-            if (installed) {
-                return;
-            }
-
-            installed = true;
-            observer.disconnect();
-            install();
-        });
-    }
-
-    observer.observe(document.documentElement, { childList: true, subtree: true });
-    queueInitialization();
+    install();
 })();

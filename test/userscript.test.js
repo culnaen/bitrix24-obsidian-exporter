@@ -7,7 +7,7 @@ const script = readFileSync('bitrix24-obsidian-exporter.user.js', 'utf8');
 const endpoint = 'https://acme.bitrix24.ru/bitrix/services/main/ajax.php?c=bitrix%3Aforum.comments&action=processcomment';
 const commentBody = 'ENTITY_XML_ID=TASK_42&ENTITY_TYPE=TK&action=ADD&POST_MESSAGE=exported+comment';
 
-function createEnvironment({ payload = { status: 'success' }, settings, isTopFrame = true } = {}) {
+function createEnvironment({ payload = { status: 'success' }, settings, isTopFrame = true, animationFrameAvailable = true } = {}) {
     const openedUris = [];
     const storage = new Map();
     const scriptStorage = new Map();
@@ -84,10 +84,6 @@ function createEnvironment({ payload = { status: 'success' }, settings, isTopFra
     const window = {
         document,
         location: { href: 'https://acme.bitrix24.ru/tasks/task/view/42/' },
-        requestAnimationFrame(callback) {
-            callback();
-            return 1;
-        },
         sessionStorage: {
             getItem(key) {
                 return storage.get(key) ?? null;
@@ -104,13 +100,14 @@ function createEnvironment({ payload = { status: 'success' }, settings, isTopFra
             });
         },
     };
+    if (animationFrameAvailable) {
+        window.requestAnimationFrame = function requestAnimationFrame(callback) {
+            callback();
+            return 1;
+        };
+    }
     window.top = isTopFrame ? window : {};
 
-    class MockMutationObserver {
-        disconnect() {}
-
-        observe() {}
-    }
 
     const context = {
         Request,
@@ -118,7 +115,6 @@ function createEnvironment({ payload = { status: 'success' }, settings, isTopFra
         URL,
         URLSearchParams,
         WeakMap,
-        MutationObserver: MockMutationObserver,
         XMLHttpRequest: MockXMLHttpRequest,
         GM_getValue(key, defaultValue) {
             return scriptStorage.get(key) ?? defaultValue;
@@ -186,6 +182,19 @@ test('exports a successful task comment sent through XMLHttpRequest', () => {
 
     assertExported(openedUris[0]);
     assert.equal(openedUris.length, 1);
+});
+
+test('installs without a scheduled animation frame', () => {
+    const { MockXMLHttpRequest, menuCommands, openedUris } = createEnvironment({
+        animationFrameAvailable: false,
+    });
+    const xhr = new MockXMLHttpRequest();
+
+    xhr.open('POST', endpoint);
+    xhr.send(commentBody);
+
+    assert.equal(menuCommands.has('Настроить экспорт в Obsidian'), true);
+    assertExported(openedUris[0]);
 });
 
 test('exports a successful task comment sent through fetch without consuming the response', async () => {
