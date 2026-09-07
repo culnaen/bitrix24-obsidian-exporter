@@ -20,8 +20,7 @@
 (() => {
     'use strict';
     const INSTALLATION_MARKER = 'data-bitrix24-obsidian-exporter-installed';
-    if (window.top !== window
-        || document.documentElement?.hasAttribute(INSTALLATION_MARKER)) {
+    if (document.documentElement?.hasAttribute(INSTALLATION_MARKER)) {
         return;
     }
     document.documentElement.setAttribute(INSTALLATION_MARKER, '');

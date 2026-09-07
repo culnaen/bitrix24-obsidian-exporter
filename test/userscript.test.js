@@ -106,7 +106,7 @@ function createEnvironment({ payload = { status: 'success' }, settings, isTopFra
             return 1;
         };
     }
-    window.top = isTopFrame ? window : {};
+    window.top = isTopFrame ? window : { document };
 
 
     const context = {
@@ -161,15 +161,15 @@ test('installs once when the userscript executes repeatedly', () => {
     assert.equal(window.fetch, interceptedFetch);
 });
 
-test('does not install in a nested frame', () => {
+test('installs in a nested task frame', () => {
     const { MockXMLHttpRequest, menuCommands, openedUris } = createEnvironment({ isTopFrame: false });
     const xhr = new MockXMLHttpRequest();
 
     xhr.open('POST', endpoint);
     xhr.send(commentBody);
 
-    assert.equal(menuCommands.size, 0);
-    assert.equal(openedUris.length, 0);
+    assert.equal(menuCommands.has('Настроить экспорт в Obsidian'), true);
+    assertExported(openedUris[0]);
 });
 
 test('exports a successful task comment sent through XMLHttpRequest', () => {
