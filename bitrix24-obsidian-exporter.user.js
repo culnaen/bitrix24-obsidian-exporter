@@ -20,7 +20,9 @@
 (() => {
     'use strict';
     const INSTALLATION_MARKER = 'data-bitrix24-obsidian-exporter-installed';
-    if (document.documentElement?.hasAttribute(INSTALLATION_MARKER)) {
+    const FRAME_INTERCEPTORS_MARKER = '__bitrix24ObsidianExportInterceptorsInstalled';
+    if (window.top !== window
+        || document.documentElement?.hasAttribute(INSTALLATION_MARKER)) {
         return;
     }
     document.documentElement.setAttribute(INSTALLATION_MARKER, '');
@@ -37,10 +39,7 @@
     const LAST_EXPORT_STORAGE_KEY = 'bitrix24-obsidian:last-export';
     const FORUM_COMMENTS_CONTROLLER = 'bitrix:forum.comments';
     const FORUM_COMMENTS_ACTION = 'processcomment';
-    const nativeFetch = window.fetch;
-    const nativeXhrOpen = XMLHttpRequest.prototype.open;
-    const nativeXhrSend = XMLHttpRequest.prototype.send;
-    const xhrRequests = new WeakMap();
+
 
     function pad(number) {
         return String(number).padStart(2, '0');
@@ -455,11 +454,21 @@
         (document.body || document.documentElement).append(overlay);
     }
 
-    function install() {
-        GM_registerMenuCommand('Настроить экспорт в Obsidian', configureSettings);
+    function installInterceptors(targetWindow) {
+        const targetXhr = targetWindow.XMLHttpRequest;
+        if (targetWindow[FRAME_INTERCEPTORS_MARKER]
+            || !targetXhr?.prototype) {
+            return;
+        }
+
+        const nativeFetch = targetWindow.fetch;
+        const nativeXhrOpen = targetXhr.prototype.open;
+        const nativeXhrSend = targetXhr.prototype.send;
+        const xhrRequests = new WeakMap();
+        targetWindow[FRAME_INTERCEPTORS_MARKER] = true;
 
         if (typeof nativeFetch === 'function') {
-            window.fetch = async function interceptedFetch(input, init) {
+            targetWindow.fetch = async function interceptedFetch(input, init) {
                 const request = fetchCommentRequest(input, init);
                 const response = await nativeFetch.call(this, input, init);
                 await handleFetchComment(request, response);
@@ -467,14 +476,14 @@
             };
         }
 
-        XMLHttpRequest.prototype.open = function interceptedOpen(method, url, ...rest) {
+        targetXhr.prototype.open = function interceptedOpen(method, url, ...rest) {
             if (isForumCommentRequest(url, method)) {
                 xhrRequests.set(this, { method, url: String(url), body: null });
             }
             return nativeXhrOpen.call(this, method, url, ...rest);
         };
 
-        XMLHttpRequest.prototype.send = function interceptedSend(body) {
+        targetXhr.prototype.send = function interceptedSend(body) {
             const request = xhrRequests.get(this);
             if (request) {
                 request.body = body;
@@ -505,6 +514,39 @@
 
             return nativeXhrSend.call(this, body);
         };
+    }
+
+    function isTaskFrame(frame) {
+        try {
+            const url = new URL(frame.src, window.location.href);
+            return url.pathname.includes('/tasks/task/view/')
+                && url.searchParams.get('IFRAME_TYPE') === 'SIDE_SLIDER';
+        } catch {
+            return false;
+        }
+    }
+
+    function installTaskFrame(frame) {
+        if (!isTaskFrame(frame)) {
+            return;
+        }
+
+        try {
+            installInterceptors(frame.contentWindow);
+        } catch {
+            // Frames outside the current origin cannot host task comments.
+        }
+    }
+
+    function install() {
+        GM_registerMenuCommand('Настроить экспорт в Obsidian', configureSettings);
+        installInterceptors(window);
+        document.querySelectorAll('iframe').forEach(installTaskFrame);
+        document.addEventListener('load', event => {
+            if (event.target?.tagName === 'IFRAME') {
+                installTaskFrame(event.target);
+            }
+        }, true);
     }
 
     install();

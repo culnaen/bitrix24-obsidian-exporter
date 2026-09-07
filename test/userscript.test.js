@@ -7,7 +7,7 @@ const script = readFileSync('bitrix24-obsidian-exporter.user.js', 'utf8');
 const endpoint = 'https://acme.bitrix24.ru/bitrix/services/main/ajax.php?c=bitrix%3Aforum.comments&action=processcomment';
 const commentBody = 'ENTITY_XML_ID=TASK_42&ENTITY_TYPE=TK&action=ADD&POST_MESSAGE=exported+comment';
 
-function createEnvironment({ payload = { status: 'success' }, settings, isTopFrame = true, animationFrameAvailable = true } = {}) {
+function createEnvironment({ payload = { status: 'success' }, settings, isTopFrame = true, animationFrameAvailable = true, hasTaskFrame = false } = {}) {
     const openedUris = [];
     const storage = new Map();
     const scriptStorage = new Map();
@@ -48,6 +48,19 @@ function createEnvironment({ payload = { status: 'success' }, settings, isTopFra
         }
     }
 
+    class MockTaskFrameXMLHttpRequest extends MockXMLHttpRequest {
+        open(method, url) {
+            return super.open(method, url);
+        }
+
+        send(body) {
+            return super.send(body);
+        }
+    }
+
+    let taskFrame = null;
+    let taskFrameWindow = null;
+
     const attributes = new Set();
     const documentElement = {
         append() {},
@@ -77,9 +90,10 @@ function createEnvironment({ payload = { status: 'success' }, settings, isTopFra
         querySelector() {
             return null;
         },
-        querySelectorAll() {
-            return [];
+        querySelectorAll(selector) {
+            return selector === 'iframe' && taskFrame ? [taskFrame] : [];
         },
+        addEventListener() {},
     };
     const window = {
         document,
@@ -93,6 +107,7 @@ function createEnvironment({ payload = { status: 'success' }, settings, isTopFra
             },
         },
         setTimeout() {},
+        XMLHttpRequest: MockXMLHttpRequest,
         async fetch() {
             return new Response(JSON.stringify(payload), {
                 status: 200,
@@ -107,6 +122,17 @@ function createEnvironment({ payload = { status: 'success' }, settings, isTopFra
         };
     }
     window.top = isTopFrame ? window : { document };
+    if (hasTaskFrame) {
+        taskFrameWindow = {
+            XMLHttpRequest: MockTaskFrameXMLHttpRequest,
+            fetch: window.fetch,
+        };
+        taskFrame = {
+            tagName: 'IFRAME',
+            src: 'https://acme.bitrix24.ru/company/personal/user/1/tasks/task/view/42/?IFRAME=Y&IFRAME_TYPE=SIDE_SLIDER',
+            contentWindow: taskFrameWindow,
+        };
+    }
 
 
     const context = {
@@ -135,6 +161,7 @@ function createEnvironment({ payload = { status: 'success' }, settings, isTopFra
 
     return {
         MockXMLHttpRequest,
+        taskFrameWindow,
         menuCommands,
         metrics,
         openedUris,
@@ -161,21 +188,32 @@ test('installs once when the userscript executes repeatedly', () => {
     assert.equal(window.fetch, interceptedFetch);
 });
 
-test('installs in a nested task frame', () => {
+test('does not install in a nested frame', () => {
     const { MockXMLHttpRequest, menuCommands, openedUris } = createEnvironment({ isTopFrame: false });
     const xhr = new MockXMLHttpRequest();
 
     xhr.open('POST', endpoint);
     xhr.send(commentBody);
 
-    assert.equal(menuCommands.has('Настроить экспорт в Obsidian'), true);
-    assertExported(openedUris[0]);
+    assert.equal(menuCommands.size, 0);
+    assert.equal(openedUris.length, 0);
 });
 
 test('exports a successful task comment sent through XMLHttpRequest', () => {
     const { MockXMLHttpRequest, menuCommands, openedUris } = createEnvironment();
     assert.equal(menuCommands.has('Настроить экспорт в Obsidian'), true);
     const xhr = new MockXMLHttpRequest();
+
+    xhr.open('POST', endpoint);
+    xhr.send(commentBody);
+
+    assertExported(openedUris[0]);
+    assert.equal(openedUris.length, 1);
+});
+
+test('exports a successful task comment from a side slider frame', () => {
+    const { openedUris, taskFrameWindow } = createEnvironment({ hasTaskFrame: true });
+    const xhr = new taskFrameWindow.XMLHttpRequest();
 
     xhr.open('POST', endpoint);
     xhr.send(commentBody);
