@@ -7,12 +7,57 @@ const script = readFileSync('bitrix24-obsidian-exporter.user.js', 'utf8');
 const taskEndpoint = 'https://acme.bitrix24.ru/bitrix/services/main/ajax.php?action=tasks.v2.Task.get';
 const sendEndpoint = 'https://acme.bitrix24.ru/bitrix/services/main/ajax.php?action=im.v2.Chat.Message.send';
 const messageBody = 'dialogId=chat11784&fields%5Bmessage%5D=exported+message';
+const imageEndpoint = 'https://acme.bitrix24.ru/rest/im.disk.file.commit.json';
+const imageBody = 'chat_id=11784&message=&upload_id%5B0%5D=123';
 
-function createEnvironment({ payload = { status: 'success', data: { id: 1376900 } }, settings, isTopFrame = true, hasTaskFrame = false, crmItems = [], frameCrmItems = crmItems } = {}) {
+function imageCommit(messageId, files) {
+    return {
+        result: {
+            MESSAGE_ID: messageId,
+            FILES: Object.fromEntries(files.map(file => [`upload${file.id}`, {
+                id: file.id, name: `${file.id}.png`, extension: 'png', type: 'image',
+                urlDownload: `/download/${file.id}.png`,
+            }])),
+        },
+    };
+}
+
+
+function createEnvironment({ payload = { status: 'success', data: { id: 1376900 } }, settings, isTopFrame = true, hasTaskFrame = false, crmItems = [], frameCrmItems = crmItems, folder = null, downloadResponse } = {}) {
     const openedUris = [];
     const storage = new Map();
     const scriptStorage = new Map();
     const eventListeners = new WeakMap();
+    const elements = new Map();
+    const databaseValues = new Map(folder ? [['folder', folder]] : []);
+    const indexedDB = {
+        open() {
+            const request = { result: {
+                createObjectStore() {},
+                close() {},
+                transaction() {
+                    const transaction = {
+                        objectStore() {
+                            return {
+                                get(key) {
+                                    const get = { result: databaseValues.get(key) };
+                                    queueMicrotask(() => get.onsuccess());
+                                    return get;
+                                },
+                                put(value, key) {
+                                    databaseValues.set(key, value);
+                                    queueMicrotask(() => transaction.oncomplete());
+                                },
+                            };
+                        },
+                    };
+                    return transaction;
+                },
+            } };
+            queueMicrotask(() => request.onsuccess());
+            return request;
+        },
+    };
 
     if (settings) {
         scriptStorage.set('bitrix24-obsidian:settings', settings);
@@ -90,20 +135,26 @@ function createEnvironment({ payload = { status: 'success', data: { id: 1376900 
         },
     };
     const document = {
-        body: { append() {} },
+        body: { append(node) { if (node.id) elements.set(node.id, node); } },
         documentElement,
         createElement() {
             return {
                 style: {},
-                append() {},
-                remove() {},
+                children: [],
+                append(...children) { this.children.push(...children); },
+                querySelector(selector) {
+                    return this.children.find(child => child.className === selector.slice(1));
+                },
+                addEventListener(type, callback) { this[`on${type}`] = callback; },
+                remove() { elements.delete(this.id); },
                 click() {
-                    openedUris.push(this.href);
+                    if (this.href) openedUris.push(this.href);
+                    else this.onclick?.();
                 },
             };
         },
-        getElementById() {
-            return null;
+        getElementById(id) {
+            return elements.get(id) ?? null;
         },
         querySelector(selector) {
             if (selector === '.tasks-full-card[data-task-id="42"] .tasks-full-card-chat') {
@@ -130,6 +181,12 @@ function createEnvironment({ payload = { status: 'success', data: { id: 1376900 
         setTimeout() {},
         XMLHttpRequest: MockXMLHttpRequest,
         async fetch(url) {
+            if (String(url).includes('/download/')) {
+                return downloadResponse?.(String(url)) ?? {
+                    ok: true, url: String(url), headers: new Headers({ 'content-type': 'image/png' }),
+                    async blob() { return new Blob(['image bytes'], { type: 'image/png' }); },
+                };
+            }
             const result = String(url).includes('tasks.v2.Task.get')
                 ? { status: 'success', data: { id: 42, chatId: 11784 } }
                 : payload;
@@ -166,6 +223,7 @@ function createEnvironment({ payload = { status: 'success', data: { id: 1376900 
         Response,
         URL,
         URLSearchParams,
+        indexedDB,
         WeakMap,
         XMLHttpRequest: MockXMLHttpRequest,
         GM_getValue(key, defaultValue) {
@@ -185,6 +243,8 @@ function createEnvironment({ payload = { status: 'success', data: { id: 1376900 
         MockXMLHttpRequest,
         taskFrameWindow,
         openedUris,
+        elements,
+        databaseValues,
         window,
     };
 }
@@ -308,4 +368,107 @@ test('does not export rejected, empty, unrelated, or legacy forum submissions', 
     send(valid.MockXMLHttpRequest, 'https://other.example/bitrix/services/main/ajax.php?action=im.v2.Chat.Message.send', messageBody);
     send(valid.MockXMLHttpRequest, 'https://acme.bitrix24.ru/bitrix/services/main/ajax.php?c=bitrix%3Aforum.comments&action=processComment', 'ENTITY_XML_ID=TASK_42&POST_MESSAGE=legacy');
     assert.equal(valid.openedUris.length, 0);
+});
+
+function writableFolder() {
+    const files = new Map();
+    const folder = {
+        name: 'Attachments',
+        permission: 'granted',
+        async queryPermission() { return this.permission; },
+        async getFileHandle(name) {
+            return {
+                async createWritable() {
+                    return {
+                        async write(blob) { files.set(name, blob); },
+                        async close() {},
+                        async abort() { files.delete(name); },
+                    };
+                },
+            };
+        },
+    };
+    return { folder, files };
+}
+
+const settle = () => new Promise(resolve => setImmediate(resolve));
+
+test('copies image-only and captioned multiple images before linking them in the note', async () => {
+    const { folder, files } = writableFolder();
+    const env = createEnvironment({ folder, payload: imageCommit(1377256, [{ id: 401 }, { id: 402 }]) });
+    send(env.MockXMLHttpRequest, taskEndpoint);
+    send(env.MockXMLHttpRequest, imageEndpoint, 'chat_id=999&message=unrelated');
+    assert.equal(env.openedUris.length, 0);
+    send(env.MockXMLHttpRequest, imageEndpoint, imageBody);
+    await settle();
+    const first = new URL(env.openedUris[0]).searchParams.get('content');
+    assert.match(first, /#task\/42 !\[\[bitrix-task-42-message-1377256-file-401\.png\]\]/);
+    assert.match(first, /\n  !\[\[bitrix-task-42-message-1377256-file-402\.png\]\]/);
+    assert.equal(await files.get('bitrix-task-42-message-1377256-file-401.png').text(), 'image bytes');
+    assert.equal(files.size, 2);
+
+    send(env.MockXMLHttpRequest, imageEndpoint, imageBody);
+    await settle();
+    assert.equal(env.openedUris.length, 1, 'same confirmed message cannot be exported twice');
+
+    const captioned = createEnvironment({ folder, payload: imageCommit(1377257, [{ id: 403 }]) });
+    send(captioned.MockXMLHttpRequest, taskEndpoint);
+    send(captioned.MockXMLHttpRequest, imageEndpoint, 'chat_id=11784&message=photo+caption');
+    await settle();
+    assert.match(new URL(captioned.openedUris[0]).searchParams.get('content'),
+        /#task\/42 photo caption\n  !\[\[bitrix-task-42-message-1377257-file-403\.png\]\]/);
+});
+
+test('keeps image pending until user selects a writable folder', async () => {
+    const { folder, files } = writableFolder();
+    const env = createEnvironment({ payload: imageCommit(52, [{ id: 123 }]) });
+    send(env.MockXMLHttpRequest, taskEndpoint);
+    send(env.MockXMLHttpRequest, imageEndpoint, imageBody);
+    await settle();
+    assert.equal(env.openedUris.length, 0);
+    const panel = env.elements.get('bitrix24-obsidian-attachments');
+    assert.match(panel.children[0].textContent, /ожидает доступа/);
+    env.window.showDirectoryPicker = () => Promise.resolve(folder);
+    panel.children[1].click();
+    await settle();
+    assert.equal(env.openedUris.length, 1);
+    assert.equal(files.size, 1);
+    assert.equal(env.elements.has('bitrix24-obsidian-attachments'), false);
+});
+
+test('failed or unauthorized downloads never create broken Obsidian embeds', async () => {
+    const { folder, files } = writableFolder();
+    const env = createEnvironment({
+        folder, payload: imageCommit(53, [{ id: 124 }]),
+        downloadResponse(url) {
+            return { ok: true, url, headers: new Headers({ 'content-type': 'text/html' }) };
+        },
+    });
+    send(env.MockXMLHttpRequest, taskEndpoint);
+    send(env.MockXMLHttpRequest, imageEndpoint, imageBody);
+    await settle();
+    assert.equal(files.size, 0);
+    assert.equal(env.openedUris.length, 0);
+    assert.match(env.elements.get('bitrix24-obsidian-attachments').children[0].textContent, /не отдал изображение/);
+
+    folder.permission = 'prompt';
+    const revoked = createEnvironment({ folder, payload: imageCommit(54, [{ id: 125 }]) });
+    send(revoked.MockXMLHttpRequest, taskEndpoint);
+    send(revoked.MockXMLHttpRequest, imageEndpoint, imageBody);
+    await settle();
+    assert.equal(revoked.openedUris.length, 0);
+    assert.match(revoked.elements.get('bitrix24-obsidian-attachments').children[0].textContent, /ожидает доступа/);
+});
+
+test('handles fetch image commits with a Request body without consuming the response', async () => {
+    const { folder, files } = writableFolder();
+    const env = createEnvironment({ folder, payload: imageCommit(55, [{ id: 126 }]) });
+    await env.window.fetch(taskEndpoint, { method: 'POST' });
+    const request = new Request(imageEndpoint, { method: 'POST', body: imageBody });
+    const response = await env.window.fetch(request);
+    await settle();
+    assert.equal((await response.json()).result.MESSAGE_ID, 55);
+    assert.match(new URL(env.openedUris[0]).searchParams.get('content'),
+        /!\[\[bitrix-task-42-message-55-file-126\.png\]\]/);
+    assert.equal(await files.get('bitrix-task-42-message-55-file-126.png').text(), 'image bytes');
 });
