@@ -8,7 +8,7 @@ const taskEndpoint = 'https://acme.bitrix24.ru/bitrix/services/main/ajax.php?act
 const sendEndpoint = 'https://acme.bitrix24.ru/bitrix/services/main/ajax.php?action=im.v2.Chat.Message.send';
 const messageBody = 'dialogId=chat11784&fields%5Bmessage%5D=exported+message';
 
-function createEnvironment({ payload = { status: 'success', data: { id: 1376900 } }, settings, isTopFrame = true, hasTaskFrame = false } = {}) {
+function createEnvironment({ payload = { status: 'success', data: { id: 1376900 } }, settings, isTopFrame = true, hasTaskFrame = false, crmItems = [], frameCrmItems = crmItems } = {}) {
     const openedUris = [];
     const storage = new Map();
     const scriptStorage = new Map();
@@ -17,6 +17,19 @@ function createEnvironment({ payload = { status: 'success', data: { id: 1376900 
     if (settings) {
         scriptStorage.set('bitrix24-obsidian:settings', settings);
     }
+    const taskCard = items => ({
+        querySelectorAll(selector) {
+            if (selector !== '.tasks-field-crm-item-text > span') {
+                return [];
+            }
+            return items.map(([type, name]) => ({
+                firstChild: { textContent: `${type} ` },
+                querySelector(query) {
+                    return query === 'a' ? { textContent: name } : null;
+                },
+            }));
+        },
+    });
 
     class MockXMLHttpRequest {
         constructor() {
@@ -93,7 +106,10 @@ function createEnvironment({ payload = { status: 'success', data: { id: 1376900 
             return null;
         },
         querySelector(selector) {
-            return selector === '.tasks-full-card[data-task-id="42"] .tasks-full-card-chat' ? {} : null;
+            if (selector === '.tasks-full-card[data-task-id="42"] .tasks-full-card-chat') {
+                return {};
+            }
+            return selector === '.tasks-full-card[data-task-id="42"]' ? taskCard(crmItems) : null;
         },
         querySelectorAll(selector) {
             return selector === 'iframe' && taskFrame ? [taskFrame] : [];
@@ -126,7 +142,14 @@ function createEnvironment({ payload = { status: 'success', data: { id: 1376900 
     window.top = isTopFrame ? window : { document };
     if (hasTaskFrame) {
         taskFrameWindow = {
-            document,
+            document: {
+                ...document,
+                querySelector(selector) {
+                    return selector === '.tasks-full-card[data-task-id="42"]'
+                        ? taskCard(frameCrmItems)
+                        : document.querySelector(selector);
+                },
+            },
             XMLHttpRequest: MockTaskFrameXMLHttpRequest,
             fetch: window.fetch,
         };
@@ -200,11 +223,47 @@ test('exports only confirmed messages from the task-linked chat', () => {
     assert.equal(openedUris.length, 1);
 });
 
-test('exports a task chat message from a side slider frame', () => {
-    const { openedUris, taskFrameWindow } = createEnvironment({ hasTaskFrame: true });
+test('exports the company from the task side slider, not the parent page', () => {
+    const { openedUris, taskFrameWindow } = createEnvironment({
+        hasTaskFrame: true,
+        crmItems: [['Компания', 'Чужая компания']],
+        frameCrmItems: [['Компания', 'ООО "ЛАСНЕТ"']],
+    });
     send(taskFrameWindow.XMLHttpRequest, taskEndpoint);
     send(taskFrameWindow.XMLHttpRequest, sendEndpoint, messageBody);
-    assertExported(openedUris[0]);
+    const content = new URL(openedUris[0]).searchParams.get('content');
+    assert.match(content, /#task\/42 #company\/ООО_ЛАСНЕТ exported message/);
+    assert.doesNotMatch(content, /Чужая/);
+});
+
+test('adds linked companies beside a custom task tag, never the contact', () => {
+    const { MockXMLHttpRequest, openedUris } = createEnvironment({
+        settings: { taskTagName: 'lasnet' },
+        crmItems: [
+            ['Контакт', 'Чубаров Владлен'],
+            ['Компания', 'ООО "ЛАСНЕТ"'],
+            ['Компания', 'Рога & Копыта'],
+            ['Компания', 'ООО "ЛАСНЕТ"'],
+        ],
+    });
+    send(MockXMLHttpRequest, taskEndpoint);
+    send(MockXMLHttpRequest, sendEndpoint, messageBody);
+    const content = new URL(openedUris[0]).searchParams.get('content');
+    assert.match(content, /#lasnet\/42 #company\/ООО_ЛАСНЕТ #company\/Рога_Копыта exported message/);
+    assert.doesNotMatch(content, /Чубаров|#contact/);
+    assert.equal(content.match(/#company\//g).length, 2);
+});
+
+test('omits company tags when disabled, including when a contact exists', () => {
+    const { MockXMLHttpRequest, openedUris } = createEnvironment({
+        settings: { includeCompanyTag: false },
+        crmItems: [['Компания', 'ООО "ЛАСНЕТ"'], ['Контакт', 'Чубаров Владлен']],
+    });
+    send(MockXMLHttpRequest, taskEndpoint);
+    send(MockXMLHttpRequest, sendEndpoint, messageBody);
+    const content = new URL(openedUris[0]).searchParams.get('content');
+    assert.match(content, /#task\/42 exported message/);
+    assert.doesNotMatch(content, /#company|#contact|ЛАСНЕТ|Чубаров/);
 });
 
 test('exports fetch messages without consuming the response', async () => {

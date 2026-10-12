@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bitrix24 task comments to Obsidian Daily Notes
 // @namespace    bitrix24-obsidian-exporter
-// @version      1.5.1
+// @version      1.5.2
 // @description  Appends successfully sent Bitrix24 task chat messages to the current Obsidian daily note.
 // @homepageURL  https://github.com/culnaen/bitrix24-obsidian-exporter
 // @source       https://github.com/culnaen/bitrix24-obsidian-exporter.git
@@ -90,51 +90,47 @@
         GM_setValue(SETTINGS_STORAGE_KEY, settings);
     }
 
-    function companyNameFromPage() {
-        const documents = [document];
-        for (const frame of document.querySelectorAll('iframe')) {
-            try {
-                if (frame.contentDocument) {
-                    documents.push(frame.contentDocument);
-                }
-            } catch {
-                // Ignore cross-origin frames.
-            }
-        }
-
-        for (const candidate of documents) {
-            const company = candidate.querySelector('.field_crm a[href*="/crm/company/details/"]');
-            if (company?.textContent.trim()) {
-                return company.textContent.trim();
-            }
-        }
-
-        return null;
-    }
-
-    function companyTag(settings) {
+    function companyTagsFromTask(taskDocument, taskId, settings) {
         if (!settings.includeCompanyTag) {
-            return null;
+            return [];
         }
 
-        const companyName = companyNameFromPage();
-        if (!companyName) {
-            return null;
+        const card = taskDocument.querySelector(`.tasks-full-card[data-task-id="${taskId}"]`);
+        if (!card) {
+            return [];
         }
 
-        const slug = companyName
-            .replace(/["'«»„“”]/g, '')
-            .replace(/[^\p{L}\p{N}_-]+/gu, '_')
-            .replace(/^_+|_+$/g, '');
+        const tags = [];
+        for (const item of card.querySelectorAll('.tasks-field-crm-item-text > span')) {
+            const type = item.firstChild?.textContent.trim().toLowerCase();
+            if (type !== 'компания' && type !== 'company') {
+                continue;
+            }
 
-        return slug ? `#${settings.companyTagName}/${slug}` : null;
+            const name = item.querySelector('a')?.textContent.trim();
+            if (!name) {
+                continue;
+            }
+            const slug = name
+                .replace(/["'«»„“”]/g, '')
+                .replace(/[^\p{L}\p{N}_-]+/gu, '_')
+                .replace(/^_+|_+$/g, '');
+            if (slug) {
+                const tag = `#${settings.companyTagName}/${slug}`;
+                if (!tags.includes(tag)) {
+                    tags.push(tag);
+                }
+            }
+        }
+
+        return tags;
     }
 
-    function formatEntry(entry, date, settings) {
+    function formatEntry(entry, date, settings, taskDocument) {
         const value = entry.message.replace(/\r\n?/g, '\n').trim();
         const tags = [
             settings.includeTaskTag && entry.taskId ? `#${settings.taskTagName}/${entry.taskId}` : null,
-            companyTag(settings),
+            ...companyTagsFromTask(taskDocument, entry.taskId, settings),
         ].filter(Boolean);
         const tagPrefix = tags.length > 0 ? `${tags.join(' ')} ` : '';
 
@@ -200,7 +196,7 @@
             .join('&');
     }
 
-    function openObsidian(entry) {
+    function openObsidian(entry, taskDocument) {
         if (!claimExport(entry)) {
             return;
         }
@@ -209,7 +205,7 @@
         const date = new Date();
         const uri = `obsidian://new?${encodeQuery({
             file: dailyNotePath(date, settings),
-            content: formatEntry(entry, date, settings),
+            content: formatEntry(entry, date, settings, taskDocument),
             append: 'true',
         })}`;
         const link = document.createElement('a');
@@ -307,7 +303,7 @@
 
         const message = params.get('fields[message]')?.trim();
         if (message) {
-            openObsidian({ taskId, message });
+            openObsidian({ taskId, message }, targetWindow.document);
         }
     }
 
