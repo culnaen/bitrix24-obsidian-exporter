@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Bitrix24 task comments to Obsidian Daily Notes
+// @name         Bitrix24 task chat to Obsidian Daily Notes
 // @namespace    bitrix24-obsidian-exporter
-// @version      1.4.1
-// @description  Appends successfully submitted Bitrix24 task comments to the current Obsidian daily note.
+// @version      1.5.0
+// @description  Appends successfully sent Bitrix24 task chat messages to the current Obsidian daily note.
 // @homepageURL  https://github.com/culnaen/bitrix24-obsidian-exporter
 // @source       https://github.com/culnaen/bitrix24-obsidian-exporter.git
 // @supportURL   https://github.com/culnaen/bitrix24-obsidian-exporter/issues
@@ -38,8 +38,8 @@
     const SETTINGS_STORAGE_KEY = 'bitrix24-obsidian:settings';
     const DEDUPLICATION_INTERVAL_MS = 5000;
     const LAST_EXPORT_STORAGE_KEY = 'bitrix24-obsidian:last-export';
-    const FORUM_COMMENTS_CONTROLLER = 'bitrix:forum.comments';
-    const FORUM_COMMENTS_ACTION = 'processcomment';
+    const TASK_GET_ACTION = 'tasks.v2.task.get';
+    const CHAT_SEND_ACTION = 'im.v2.chat.message.send';
 
 
     function pad(number) {
@@ -131,7 +131,7 @@
     }
 
     function formatEntry(entry, date, settings) {
-        const value = entry.comment.replace(/\r\n?/g, '\n').trim();
+        const value = entry.message.replace(/\r\n?/g, '\n').trim();
         const tags = [
             settings.includeTaskTag && entry.taskId ? `#${settings.taskTagName}/${entry.taskId}` : null,
             companyTag(settings),
@@ -168,7 +168,7 @@
         });
 
         const message = targetDocument.createElement('span');
-        message.textContent = 'Комментарий успешно передан в Obsidian';
+        message.textContent = 'Сообщение чата задачи передано в Obsidian';
 
         panel.append(message);
         (targetDocument.body || targetDocument.documentElement).append(panel);
@@ -176,7 +176,7 @@
     }
 
     function claimExport(entry) {
-        const signature = `${entry.taskId ?? ''}\u0000${entry.comment}`;
+        const signature = `${entry.taskId}\u0000${entry.message}`;
         const current = { signature, timestamp: Date.now() };
 
         try {
@@ -217,59 +217,27 @@
         link.style.display = 'none';
         (document.body || document.documentElement).append(link);
 
-        console.info('[Bitrix24 → Obsidian] Комментарий успешно передан в Obsidian.');
+        console.info('[Bitrix24 → Obsidian] Сообщение чата задачи передано в Obsidian.');
         link.click();
         link.remove();
         showSuccessNotification();
     }
 
-    function isForumCommentRequest(url, method) {
-        if (String(method || 'GET').toUpperCase() !== 'POST') {
-            return false;
+    function requestAction(url, method) {
+        if (String(method).toUpperCase() !== 'POST') {
+            return null;
         }
 
         try {
             const endpoint = new URL(url, window.location.href);
-            return endpoint.pathname === '/bitrix/services/main/ajax.php'
-                && endpoint.searchParams.get('c')?.toLowerCase() === FORUM_COMMENTS_CONTROLLER
-                && endpoint.searchParams.get('action')?.toLowerCase() === FORUM_COMMENTS_ACTION;
+            if (endpoint.origin !== window.location.origin
+                || endpoint.pathname !== '/bitrix/services/main/ajax.php') {
+                return null;
+            }
+            return endpoint.searchParams.get('action')?.toLowerCase() ?? null;
         } catch {
-            return false;
-        }
-    }
-
-    function taskComment(url, method, body) {
-        if (!isForumCommentRequest(url, method) || typeof body !== 'string') {
             return null;
         }
-
-        const payload = new URLSearchParams(body);
-        const entityXmlId = payload.get('ENTITY_XML_ID');
-        const taskId = entityXmlId?.match(/^TASK_(\d+)$/i)?.[1] ?? null;
-        const action = payload.get('action') ?? payload.get('ACTION');
-        if (action?.toUpperCase() !== 'ADD'
-            || payload.get('ENTITY_TYPE')?.toUpperCase() !== 'TK'
-            || !taskId) {
-            return null;
-        }
-
-        const comment = (payload.get('POST_MESSAGE') || payload.get('REVIEW_TEXT'))?.trim();
-        if (!comment) {
-            console.warn('[Bitrix24 → Obsidian] Текст комментария не распознан.');
-            return null;
-        }
-
-        return { comment, taskId };
-    }
-
-    function apiResponseSucceeded(payload) {
-        if (!payload || typeof payload !== 'object') {
-            return true;
-        }
-
-        return String(payload.status ?? '').toLowerCase() !== 'error'
-            && !payload.error
-            && !(Array.isArray(payload.errors) && payload.errors.length > 0);
     }
 
     function requestBody(body) {
@@ -282,16 +250,17 @@
         return null;
     }
 
-    function fetchCommentRequest(input, init) {
+    function fetchChatRequest(input, init) {
         const request = input instanceof Request ? input : null;
         const url = request ? request.url : String(input);
         const method = init?.method ?? request?.method ?? 'GET';
-        if (!isForumCommentRequest(url, method)) {
+        const action = requestAction(url, method);
+        if (action !== TASK_GET_ACTION && action !== CHAT_SEND_ACTION) {
             return null;
         }
 
         let body = init?.body;
-        if (body == null && request) {
+        if (body == null && request && action === CHAT_SEND_ACTION) {
             try {
                 body = request.clone().text();
             } catch {
@@ -299,38 +268,64 @@
             }
         }
 
-        return { url, method, body };
+        return { action, body };
     }
 
-    async function handleFetchComment(request, response) {
+    function processChatResponse(request, payload, targetWindow, taskChats) {
+        if (payload?.status !== 'success'
+            || payload.error
+            || (Array.isArray(payload.errors) && payload.errors.length > 0)) {
+            return;
+        }
+
+        if (request.action === TASK_GET_ACTION) {
+            const { id, chatId } = payload.data ?? {};
+            if (Number.isSafeInteger(Number(id)) && Number(id) > 0
+                && Number.isSafeInteger(Number(chatId)) && Number(chatId) > 0) {
+                taskChats.set(String(chatId), String(id));
+            }
+            return;
+        }
+
+        if (!Number.isSafeInteger(Number(payload.data?.id)) || Number(payload.data.id) <= 0) {
+            return;
+        }
+
+        const body = requestBody(request.body);
+        if (body === null) {
+            return;
+        }
+        const params = new URLSearchParams(body);
+        const chatId = params.get('dialogId')?.match(/^chat(\d+)$/)?.[1];
+        const taskId = taskChats.get(chatId);
+        if (!taskId
+            || !targetWindow.document.querySelector(
+                `.tasks-full-card[data-task-id="${taskId}"] .tasks-full-card-chat`,
+            )) {
+            return;
+        }
+
+        const message = params.get('fields[message]')?.trim();
+        if (message) {
+            openObsidian({ taskId, message });
+        }
+    }
+
+    async function handleFetchChat(request, response, targetWindow, taskChats) {
         if (!request || !response.ok) {
             return;
         }
 
-        let body;
-        try {
-            body = await request.body;
-        } catch {
-            return;
-        }
-
-        const entry = taskComment(request.url, request.method, requestBody(body));
-        if (!entry) {
-            return;
-        }
-
-        let payload = null;
+        let payload;
         try {
             payload = await response.clone().json();
+            if (request.body instanceof Promise) {
+                request.body = await request.body;
+            }
         } catch {
-            // A successful non-JSON response is accepted.
+            return;
         }
-
-        if (apiResponseSucceeded(payload)) {
-            openObsidian(entry);
-        } else {
-            console.warn('[Bitrix24 → Obsidian] Bitrix24 отклонил комментарий.');
-        }
+        processChatResponse(request, payload, targetWindow, taskChats);
     }
     function configureSettings() {
         const settings = loadSettings();
@@ -362,7 +357,7 @@
         });
 
         const title = document.createElement('h2');
-        title.textContent = 'Экспорт комментариев в Obsidian';
+        title.textContent = 'Экспорт сообщений чата задач в Obsidian';
         title.style.marginTop = '0';
         panel.append(title);
 
@@ -397,7 +392,7 @@
                 inputs.includeTaskTag.checked ? `#${inputs.taskTagName.value || 'task'}/123` : null,
                 inputs.includeCompanyTag.checked ? `#${inputs.companyTagName.value || 'company'}/Acme` : null,
             ].filter(Boolean);
-            preview.textContent = `Пример: 12:34 ${tags.length ? `${tags.join(' ')} ` : ''}Комментарий`;
+            preview.textContent = `Пример: 12:34 ${tags.length ? `${tags.join(' ')} ` : ''}Сообщение`;
         };
         for (const input of Object.values(inputs)) {
             input.addEventListener('input', updatePreview);
@@ -466,20 +461,22 @@
         const nativeXhrOpen = targetXhr.prototype.open;
         const nativeXhrSend = targetXhr.prototype.send;
         const xhrRequests = new WeakMap();
+        const taskChats = new Map();
         targetWindow[FRAME_INTERCEPTORS_MARKER] = true;
 
         if (typeof nativeFetch === 'function') {
             targetWindow.fetch = async function interceptedFetch(input, init) {
-                const request = fetchCommentRequest(input, init);
+                const request = fetchChatRequest(input, init);
                 const response = await nativeFetch.call(this, input, init);
-                await handleFetchComment(request, response);
+                await handleFetchChat(request, response, targetWindow, taskChats);
                 return response;
             };
         }
 
         targetXhr.prototype.open = function interceptedOpen(method, url, ...rest) {
-            if (isForumCommentRequest(url, method)) {
-                xhrRequests.set(this, { method, url: String(url), body: null });
+            const action = requestAction(url, method);
+            if (action === TASK_GET_ACTION || action === CHAT_SEND_ACTION) {
+                xhrRequests.set(this, { action, body: null });
             }
             return nativeXhrOpen.call(this, method, url, ...rest);
         };
@@ -493,23 +490,13 @@
                         return;
                     }
 
-                    const entry = taskComment(request.url, request.method, request.body);
-                    if (!entry) {
-                        return;
-                    }
-
-                    let payload = null;
+                    let payload;
                     try {
                         payload = this.responseType === 'json' ? this.response : JSON.parse(this.responseText);
                     } catch {
-                        // A successful non-JSON response is accepted.
+                        return;
                     }
-
-                    if (apiResponseSucceeded(payload)) {
-                        openObsidian(entry);
-                    } else {
-                        console.warn('[Bitrix24 → Obsidian] Bitrix24 отклонил комментарий.');
-                    }
+                    processChatResponse(request, payload, targetWindow, taskChats);
                 }, { once: true });
             }
 
@@ -535,7 +522,7 @@
         try {
             installInterceptors(frame.contentWindow);
         } catch {
-            // Frames outside the current origin cannot host task comments.
+            // Frames outside the current origin cannot host task chats.
         }
     }
 

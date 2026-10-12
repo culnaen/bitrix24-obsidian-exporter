@@ -1,25 +1,25 @@
-# Bitrix24 task comments to Obsidian Daily Notes
+# Bitrix24 task chat to Obsidian Daily Notes
 
-A userscript that appends successfully submitted Bitrix24 task comments to the current Obsidian daily note.
+A userscript that appends successfully sent Bitrix24 task chat messages to the current Obsidian daily note.
 
 ## What it does
 
-After Bitrix24 confirms a supported task-comment request, the script opens an `obsidian://new` URI with:
+After Bitrix24 confirms a task chat message, the script opens an `obsidian://new` URI with:
 
 - daily note path: `03-Daily/YYYY-MM-DD.md`;
 - one appended list item with the local time;
 - `#task/<id>` when the task ID is available;
 - `#company/<name>` when Bitrix24 exposes the linked CRM company on the page.
 
-The `#company/<name>` tag preserves the CRM context of a task comment, so notes can be filtered or found by company in Obsidian without duplicating the company name in the comment text.
+The `#company/<name>` tag preserves the CRM context of a task chat message, so notes can be filtered or found by company in Obsidian without duplicating the company name in the message text.
 
-Tested with Bitrix forum comments: a `POST` to `/bitrix/services/main/ajax.php?mode=class&c=bitrix%3Aforum.comments&action=processComment` sent through `XMLHttpRequest` or `fetch`. The request body must be URL-encoded and include `action=ADD`, `ENTITY_TYPE=TK`, `ENTITY_XML_ID=TASK_<id>`, and comment text in `POST_MESSAGE` or `REVIEW_TEXT`; other Bitrix APIs and request formats are not supported.
+Tested on a self-hosted 1C-Bitrix Corporate Portal 26.800.0 task. The script observes same-origin `POST /bitrix/services/main/ajax.php?action=tasks.v2.Task.get` to associate the task ID with its `chatId`, then `POST /bitrix/services/main/ajax.php?action=im.v2.Chat.Message.send` to read `dialogId=chat<chatId>` and `fields[message]`. It exports only after Bitrix confirms the message ID and the matching task chat is open. Other chats and legacy forum comments are not exported. Both `XMLHttpRequest` and `fetch` are supported.
 
 ## Install in Tampermonkey
 
 1. Install the [Tampermonkey browser extension](https://www.tampermonkey.net/).
 2. Click **[Install the userscript](https://culnaen.github.io/bitrix24-obsidian-exporter/bitrix24-obsidian-exporter.user.js)** and confirm the installation in Tampermonkey.
-3. Open a Bitrix24 task, submit a comment, and allow the browser or operating system to open the `obsidian://` link when prompted.
+3. Open a Bitrix24 task, send a task chat message, and allow the browser or operating system to open the `obsidian://` link when prompted.
 
 Obsidian must be installed and configured to handle its URI scheme. Violentmonkey and compatible userscript managers can use the same link.
 
@@ -31,19 +31,19 @@ Tag names may contain letters, digits, `_`, `-`, and `/`; do not include the lea
 
 ### Self-hosted Bitrix
 
-The bundled script is enabled only for Bitrix24 cloud portals (`https://*.bitrix24.*/*`). For a self-hosted portal, add its exact HTTPS host to the userscript metadata before saving in Tampermonkey:
+The script is enabled for Bitrix24 cloud portals and task pages on self-hosted HTTPS portals (`https://*/company/personal/user/*/tasks/*`). To use other task URL patterns, add an exact host `@match` rule in Tampermonkey:
 
 ```js
 // @match        https://bitrixmoeyjfirmy.ru/*
 ```
 
-Replace `bitrixmoeyjfirmy.ru` with your portal domain; for example, `https://bitrix.ru/*`. Keep the cloud `@match` line when both portal types are needed. This explicit opt-in avoids granting the script access to every HTTPS site.
+Replace `bitrixmoeyjfirmy.ru` with your portal domain. Keep the cloud `@match` line if needed.
 
 ## Privacy and permissions
 
-By default, the script runs only on `https://*.bitrix24.*/*`; self-hosted portals require an explicit `@match` entry. On an enabled portal it observes only the tested Bitrix forum-comment `XMLHttpRequest` and `fetch` requests. It does not send data to a third-party server. Comment text, task IDs, and available CRM company names are passed only to Obsidian through the local `obsidian://` URI and become content in your vault.
+On enabled pages the script observes only the task lookup and task chat send AJAX requests. It uses the browser's existing Bitrix session: no REST token or additional OAuth scope is required. It does not send data to a third-party server. Chat text, task IDs, and available CRM company names are passed only to Obsidian through the local `obsidian://` URI and become content in your vault.
 
-Do not install this script on a portal unless you are authorized to copy its comments into your local vault.
+Do not install this script on a portal unless you are authorized to copy its task chat messages into your local vault.
 
 ## Development
 
