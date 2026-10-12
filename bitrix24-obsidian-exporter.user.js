@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Bitrix24 task chat to Obsidian Daily Notes
+// @name         Bitrix24 task comments to Obsidian Daily Notes
 // @namespace    bitrix24-obsidian-exporter
-// @version      1.5.0
+// @version      1.5.1
 // @description  Appends successfully sent Bitrix24 task chat messages to the current Obsidian daily note.
 // @homepageURL  https://github.com/culnaen/bitrix24-obsidian-exporter
 // @source       https://github.com/culnaen/bitrix24-obsidian-exporter.git

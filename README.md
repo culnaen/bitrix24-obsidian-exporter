@@ -21,6 +21,8 @@ Tested on a self-hosted 1C-Bitrix Corporate Portal 26.800.0 task. The script obs
 2. Click **[Install the userscript](https://culnaen.github.io/bitrix24-obsidian-exporter/bitrix24-obsidian-exporter.user.js)** and confirm the installation in Tampermonkey.
 3. Open a Bitrix24 task, send a task chat message, and allow the browser or operating system to open the `obsidian://` link when prompted.
 
+When upgrading from the forum-comment version, update the existing Tampermonkey entry and reload the task tab. The entry retains its old “task comments” name so Tampermonkey recognizes it as the same script; check that its version is **1.5.1** before testing.
+
 Obsidian must be installed and configured to handle its URI scheme. Violentmonkey and compatible userscript managers can use the same link.
 
 ## Configuration
