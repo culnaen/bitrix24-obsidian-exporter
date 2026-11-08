@@ -23,7 +23,7 @@ function imageCommit(messageId, files) {
 }
 
 
-function createEnvironment({ payload = { status: 'success', data: { id: 1376900 } }, settings, isTopFrame = true, hasTaskFrame = false, crmItems = [], frameCrmItems = crmItems, folder = null, taskFolder = writableTaskFolder().folder, downloadResponse } = {}) {
+function createEnvironment({ payload = { status: 'success', data: { id: 1376900 } }, taskResult = { status: 'success', data: { id: 42, chatId: 11784, title: 'Не работает интернет' } }, settings, isTopFrame = true, hasTaskFrame = false, crmItems = [], frameCrmItems = crmItems, folder = null, taskFolder = writableTaskFolder().folder, downloadResponse } = {}) {
     const openedUris = [];
     const storage = new Map();
     const scriptStorage = new Map();
@@ -95,7 +95,7 @@ function createEnvironment({ payload = { status: 'success', data: { id: 1376900 
         send(body) {
             this.body = body;
             const result = this.url?.includes('tasks.v2.Task.get')
-                ? { status: 'success', data: { id: 42, chatId: 11784, title: 'Не работает интернет' } }
+                ? taskResult
                 : payload;
             this.responseText = JSON.stringify(result);
             this.response = result;
@@ -191,7 +191,7 @@ function createEnvironment({ payload = { status: 'success', data: { id: 1376900 
                 };
             }
             const result = String(url).includes('tasks.v2.Task.get')
-                ? { status: 'success', data: { id: 42, chatId: 11784, title: 'Не работает интернет' } }
+                ? taskResult
                 : payload;
             return new Response(JSON.stringify(result), {
                 status: 200,
@@ -287,10 +287,11 @@ test('exports only confirmed messages from the task-linked chat', async () => {
     assertExported(openedUris[0]);
     assert.equal(openedUris.length, 1);
     assert.match(taskFiles.get('42.md'), /bitrix_id: 42\ntitle: "Не работает интернет"/);
+    assert.match(taskFiles.get('42.md'), /tags:\n  - lasnet\nbitrix_id: 42/);
 });
 
 test('exports the company from the task side slider, not the parent page', async () => {
-    const { openedUris, taskFrameWindow } = createEnvironment({
+    const { openedUris, taskFrameWindow, taskFiles } = createEnvironment({
         hasTaskFrame: true,
         crmItems: [['Компания', 'Чужая компания']],
         frameCrmItems: [['Компания', 'ООО "ЛАСНЕТ"']],
@@ -301,10 +302,12 @@ test('exports the company from the task side slider, not the parent page', async
     const content = new URL(openedUris[0]).searchParams.get('content');
     assert.match(content, /\[\[02-Tasks\/Bitrix\/42\|№42\]\] #company\/ООО_ЛАСНЕТ exported message/);
     assert.doesNotMatch(content, /Чужая/);
+    assert.match(taskFiles.get('42.md'), /tags:\n  - lasnet\n  - company\/ООО_ЛАСНЕТ\n/);
+    assert.doesNotMatch(taskFiles.get('42.md'), /Чужая/);
 });
 
 test('adds linked companies beside the task link, never the contact', async () => {
-    const { MockXMLHttpRequest, openedUris } = createEnvironment({
+    const { MockXMLHttpRequest, openedUris, taskFiles } = createEnvironment({
         crmItems: [
             ['Контакт', 'Чубаров Владлен'],
             ['Компания', 'ООО "ЛАСНЕТ"'],
@@ -319,10 +322,12 @@ test('adds linked companies beside the task link, never the contact', async () =
     assert.match(content, /\[\[02-Tasks\/Bitrix\/42\|№42\]\] #company\/ООО_ЛАСНЕТ #company\/Рога_Копыта exported message/);
     assert.doesNotMatch(content, /Чубаров|#contact/);
     assert.equal(content.match(/#company\//g).length, 2);
+    assert.match(taskFiles.get('42.md'), /tags:\n  - lasnet\n  - company\/ООО_ЛАСНЕТ\n  - company\/Рога_Копыта\n/);
+    assert.doesNotMatch(taskFiles.get('42.md'), /Чубаров|contact/);
 });
 
-test('omits company tags when disabled, including when a contact exists', async () => {
-    const { MockXMLHttpRequest, openedUris } = createEnvironment({
+test('keeps company tags in the card when daily company tags are disabled', async () => {
+    const { MockXMLHttpRequest, openedUris, taskFiles } = createEnvironment({
         settings: { includeCompanyTag: false },
         crmItems: [['Компания', 'ООО "ЛАСНЕТ"'], ['Контакт', 'Чубаров Владлен']],
     });
@@ -332,6 +337,29 @@ test('omits company tags when disabled, including when a contact exists', async 
     const content = new URL(openedUris[0]).searchParams.get('content');
     assert.match(content, /\[\[02-Tasks\/Bitrix\/42\|№42\]\] exported message/);
     assert.doesNotMatch(content, /#company|#contact|ЛАСНЕТ|Чубаров/);
+    assert.match(taskFiles.get('42.md'), /tags:\n  - lasnet\n  - company\/ООО_ЛАСНЕТ\n/);
+});
+
+test('tags a task with its current CRM company even when the card has no company field', async () => {
+    const env = createEnvironment({
+        taskResult: {
+            status: 'success',
+            data: { id: 42, chatId: 11784, title: 'Не работает интернет', crmItemIds: ['CO_412', 'C_22'] },
+        },
+    });
+    env.window.BX = { ajax: { async runAction(action, { data }) {
+        if (action !== 'crm.controller.item.get' || data.id !== 412 || data.entityTypeId !== 4) {
+            throw new Error('Only the linked company can be looked up');
+        }
+        return { data: { item: { id: 412, title: 'ООО "ЛАСНЕТ"' } } };
+    } } };
+    send(env.MockXMLHttpRequest, taskEndpoint);
+    send(env.MockXMLHttpRequest, sendEndpoint, messageBody);
+    await settle();
+    const card = env.taskFiles.get('42.md');
+    assert.match(card, /tags:\n  - lasnet\n  - company\/ООО_ЛАСНЕТ\nbitrix_id: 42/);
+    assert.doesNotMatch(card, /contact|C_22/);
+    assertExported(env.openedUris[0]);
 });
 
 test('exports fetch messages without consuming the response', async () => {

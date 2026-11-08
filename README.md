@@ -4,14 +4,14 @@ A userscript that creates ID-named Bitrix task cards and appends sent task-chat 
 
 ## What it does
 
-After Bitrix24 confirms a task chat message, the script first creates `02-Tasks/Bitrix/<id>.md` if it is missing. The card contains `bitrix_id`, the title returned by Bitrix (or `null` if unavailable), and a source URL when the task card URL identifies the current user. Existing cards are never overwritten. It then opens an `obsidian://new` URI with:
+After Bitrix24 confirms a task chat message, the script first creates `02-Tasks/Bitrix/<id>.md` if it is missing. The card contains `bitrix_id`, `tags` (`lasnet` and `company/<normalized name>` for each available directly linked CRM company), the title returned by Bitrix (or `null` if unavailable), and a source URL when the task card URL identifies the current user. If no company is linked or its name cannot be obtained, the card keeps only `lasnet`. Existing cards are never overwritten. It then opens an `obsidian://new` URI with:
 
 - daily note path: `03-Daily/YYYY-MM-DD.md`;
 - one appended list item with the local time and `[[02-Tasks/Bitrix/<id>|№<id>]]`;
 - `#company/<name>` for each company linked to that task in the CRM field. Contacts are not exported;
 - local `![[image.png]]` embeds when the message includes images. Images are downloaded into a folder you select **inside the Obsidian vault** before the note is opened.
 
-The company tag is read from the matching task card (including a task opened in a side slider), not from CRM links elsewhere on the page. Names are normalized as Obsidian tags; for example, `ООО "ЛАСНЕТ"` becomes `#company/ООО_ЛАСНЕТ`.
+The daily company tag is read from the matching Bitrix task card (including a task opened in a side slider), not from CRM links elsewhere on the page. Task-card company tags use direct CRM company links from the task response when available, with the displayed Bitrix task card as a fallback. Contacts are excluded. Names are normalized as Obsidian tags; for example, `ООО "ЛАСНЕТ"` becomes `company/ООО_ЛАСНЕТ` in card properties and `#company/ООО_ЛАСНЕТ` in daily notes.
 
 Tested on a self-hosted 1C-Bitrix Corporate Portal 26.800.0 task. The script observes same-origin `POST /bitrix/services/main/ajax.php?action=tasks.v2.Task.get` to associate the task ID with its `chatId`, then `im.v2.Chat.Message.send` for text or `POST /rest/im.disk.file.commit.json` for images. It exports only after Bitrix confirms the message ID and the matching task chat is open. Other chats and legacy forum comments are not exported. Both `XMLHttpRequest` and `fetch` are supported.
 
@@ -22,13 +22,13 @@ Tested on a self-hosted 1C-Bitrix Corporate Portal 26.800.0 task. The script obs
 3. Create the `02-Tasks/Bitrix` folder inside your vault. On a Bitrix24 task page, open **«Настроить экспорт в Obsidian»** and select this folder with **«Выбрать папку 02-Tasks/Bitrix»**. Chrome or Edge on HTTPS is required for task cards.
 4. Send a task chat message, and allow the browser or operating system to open the `obsidian://` link when prompted.
 
-When upgrading from an earlier version, update the existing Tampermonkey entry and reload the task tab. The entry retains its old “task comments” name so Tampermonkey recognizes it as the same script; check that its version is **1.7.0** before testing.
+When upgrading from an earlier version, update the existing Tampermonkey entry and reload the task tab. The entry retains its old “task comments” name so Tampermonkey recognizes it as the same script; check that its version is **1.7.1** before testing.
 
 Obsidian must be installed and configured to handle its URI scheme. Violentmonkey and compatible userscript managers can use the same link.
 
 ## Configuration
 
-In Tampermonkey, open the script's menu on a Bitrix24 page and choose **«Настроить экспорт в Obsidian»**. You can set the daily-note directory and enable or disable CRM-company tags or rename their prefix. Task links and the task-card directory are fixed at `02-Tasks/Bitrix`; the old task-tag settings are ignored. Settings are stored by Tampermonkey and survive userscript updates. The script constructs dates using the browser's local time.
+In Tampermonkey, open the script's menu on a Bitrix24 page and choose **«Настроить экспорт в Obsidian»**. You can set the daily-note directory and enable or disable **daily-note** CRM-company tags or rename their prefix. Task-card tags always use `lasnet` and `company/`, regardless of the daily-note setting. Task links and the task-card directory are fixed at `02-Tasks/Bitrix`; the old task-tag settings are ignored. Settings are stored by Tampermonkey and survive userscript updates. The script constructs dates using the browser's local time.
 
 ### Task cards
 
@@ -56,7 +56,7 @@ Replace `bitrixmoeyjfirmy.ru` with your portal domain. Keep the cloud `@match` l
 
 ## Privacy and permissions
 
-On enabled pages the script observes only task lookup and task chat send/attachment commit requests. It uses the browser's existing Bitrix session: no REST token or additional OAuth scope is required. It does not send data to a third-party server. Chat text, task IDs, and available CRM company names are passed only to Obsidian through the local `obsidian://` URI. Task titles and source URLs are written to the selected task folder, images to the selected attachment folder. The Bitrix origin has read/write access to both selected folders; their handles are stored in its IndexedDB. Only select vault folders whose contents you are authorized to expose to that origin.
+On enabled pages the script observes task lookup and task chat send/attachment commit requests, and looks up names of directly linked CRM companies when creating a card. It uses the browser's existing Bitrix session: no REST token or additional OAuth scope is required. It does not send data to a third-party server. Chat text and task IDs go to Obsidian through the local `obsidian://` URI; CRM company tags go into that URI only when enabled for daily notes. Task titles, CRM company tags, and source URLs are written to the selected task folder, images to the selected attachment folder. The Bitrix origin has read/write access to both selected folders; their handles are stored in its IndexedDB. Only select vault folders whose contents you are authorized to expose to that origin.
 
 Do not install this script on a portal unless you are authorized to copy its task chat messages into your local vault.
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bitrix24 task comments to Obsidian Daily Notes
 // @namespace    bitrix24-obsidian-exporter
-// @version      1.7.0
+// @version      1.7.1
 // @description  Exports task chat messages to linked Obsidian Daily Notes and task cards.
 // @homepageURL  https://github.com/culnaen/bitrix24-obsidian-exporter
 // @source       https://github.com/culnaen/bitrix24-obsidian-exporter.git
@@ -45,6 +45,8 @@
     const pendingImages = new Map();
     const pendingExports = new Map();
     const taskTitles = new Map();
+    const taskCompanyIds = new Map();
+    const companyTitles = new Map();
     let exportingImages = false;
     let retryImages = false;
     let exportingEntries = false;
@@ -93,11 +95,15 @@
         GM_setValue(SETTINGS_STORAGE_KEY, settings);
     }
 
-    function companyTagsFromTask(taskDocument, taskId, settings) {
-        if (!settings.includeCompanyTag) {
-            return [];
-        }
+    function companyTag(name, prefix) {
+        const slug = name
+            .replace(/["'«»„“”]/g, '')
+            .replace(/[^\p{L}\p{N}_-]+/gu, '_')
+            .replace(/^_+|_+$/g, '');
+        return slug ? `#${prefix}/${slug}` : null;
+    }
 
+    function companyTagsFromTask(taskDocument, taskId, prefix) {
         const card = taskDocument.querySelector(`.tasks-full-card[data-task-id="${taskId}"]`);
         if (!card) {
             return [];
@@ -114,25 +120,62 @@
             if (!name) {
                 continue;
             }
-            const slug = name
-                .replace(/["'«»„“”]/g, '')
-                .replace(/[^\p{L}\p{N}_-]+/gu, '_')
-                .replace(/^_+|_+$/g, '');
-            if (slug) {
-                const tag = `#${settings.companyTagName}/${slug}`;
-                if (!tags.includes(tag)) {
-                    tags.push(tag);
-                }
+            const tag = companyTag(name, prefix);
+            if (tag && !tags.includes(tag)) {
+                tags.push(tag);
             }
         }
 
         return tags;
     }
 
+    async function companyTagsForCard(taskDocument, taskId) {
+        const ids = taskCompanyIds.get(String(taskId));
+        if (!ids?.length || typeof window.BX?.ajax?.runAction !== 'function') {
+            return companyTagsFromTask(taskDocument, taskId, 'company');
+        }
+
+        const tags = [];
+        let missing = false;
+        for (const id of ids) {
+            try {
+                let title = companyTitles.get(id);
+                if (!title) {
+                    const response = await window.BX.ajax.runAction('crm.controller.item.get', {
+                        method: 'POST', data: { id, entityTypeId: 4 },
+                    });
+                    const item = response.data?.item;
+                    if (Number(item?.id) !== id || typeof item.title !== 'string') {
+                        missing = true;
+                        continue;
+                    }
+                    title = item.title;
+                    companyTitles.set(id, title);
+                }
+                const tag = companyTag(title, 'company');
+                if (tag && !tags.includes(tag)) {
+                    tags.push(tag);
+                }
+            } catch {
+                missing = true;
+            }
+        }
+        if (missing) {
+            for (const tag of companyTagsFromTask(taskDocument, taskId, 'company')) {
+                if (!tags.includes(tag)) {
+                    tags.push(tag);
+                }
+            }
+        }
+        return tags;
+    }
+
     function formatEntry(entry, date, settings, taskDocument) {
         const value = entry.message.replace(/\r\n?/g, '\n').trim();
         const taskLink = `[[${TASK_NOTE_DIRECTORY}/${entry.taskId}|№${entry.taskId}]]`;
-        const tags = companyTagsFromTask(taskDocument, entry.taskId, settings);
+        const tags = settings.includeCompanyTag
+            ? companyTagsFromTask(taskDocument, entry.taskId, settings.companyTagName)
+            : [];
         return `\n- ${pad(date.getHours())}:${pad(date.getMinutes())} ${taskLink} ${tags.length ? `${tags.join(' ')} ` : ''}${value}`;
     }
 
@@ -309,12 +352,18 @@
         }
 
         if (request.action === TASK_GET_ACTION) {
-            const { id, chatId, title } = payload.data ?? {};
+            const { id, chatId, title, crmItemIds } = payload.data ?? {};
             if (Number.isSafeInteger(Number(id)) && Number(id) > 0
                 && Number.isSafeInteger(Number(chatId)) && Number(chatId) > 0) {
                 taskChats.set(String(chatId), String(id));
                 if (typeof title === 'string' && title.trim()) {
                     taskTitles.set(String(id), title.trim().replace(/\s+/g, ' '));
+                }
+                if (Array.isArray(crmItemIds)) {
+                    taskCompanyIds.set(String(id), [...new Set(crmItemIds
+                        .map(item => String(item).match(/^CO_([1-9]\d*)$/)?.[1])
+                        .filter(value => value && Number.isSafeInteger(Number(value)))
+                        .map(Number))]);
                 }
             }
             return;
@@ -397,8 +446,10 @@
         }
     }
 
-    function taskNoteContent(entry, taskDocument) {
+    async function taskNoteContent(entry, taskDocument) {
         const title = taskTitles.get(String(entry.taskId)) ?? null;
+        const tags = ['lasnet', ...(await companyTagsForCard(taskDocument, entry.taskId))
+            .map(tag => tag.slice(1))];
         const taskPath = taskDocument.URL
             ? new URL(taskDocument.URL).pathname
             : window.location.pathname;
@@ -407,7 +458,7 @@
         const source = userId
             ? `${window.location.origin}/company/personal/user/${userId}/tasks/task/view/${entry.taskId}/`
             : null;
-        return `---\ntype: bitrix-task\nbitrix_id: ${entry.taskId}\ntitle: ${title ? JSON.stringify(title) : 'null'}\nsource: ${source ? JSON.stringify(source) : 'null'}\n---\n\n# ${title ?? `Задача №${entry.taskId} — название недоступно`}\n`;
+        return `---\ntype: bitrix-task\ntags:\n${tags.map(tag => `  - ${tag}\n`).join('')}bitrix_id: ${entry.taskId}\ntitle: ${title ? JSON.stringify(title) : 'null'}\nsource: ${source ? JSON.stringify(source) : 'null'}\n---\n\n# ${title ?? `Задача №${entry.taskId} — название недоступно`}\n`;
     }
 
     async function ensureTaskNote(folder, entry, taskDocument) {
@@ -427,7 +478,7 @@
         let writable;
         try {
             writable = await handle.createWritable();
-            await writable.write(taskNoteContent(entry, taskDocument));
+            await writable.write(await taskNoteContent(entry, taskDocument));
             await writable.close();
         } catch (error) {
             try { await writable?.abort(); } catch { /* Preserve the write error. */ }
