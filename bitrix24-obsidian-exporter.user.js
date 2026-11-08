@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bitrix24 task comments to Obsidian Daily Notes
 // @namespace    bitrix24-obsidian-exporter
-// @version      1.6.0
-// @description  Exports sent Bitrix24 task chat text and images to Obsidian Daily Notes.
+// @version      1.7.0
+// @description  Exports task chat messages to linked Obsidian Daily Notes and task cards.
 // @homepageURL  https://github.com/culnaen/bitrix24-obsidian-exporter
 // @source       https://github.com/culnaen/bitrix24-obsidian-exporter.git
 // @supportURL   https://github.com/culnaen/bitrix24-obsidian-exporter/issues
@@ -30,11 +30,10 @@
 
     const DEFAULT_SETTINGS = Object.freeze({
         dailyNoteDirectory: '03-Daily',
-        includeTaskTag: true,
-        taskTagName: 'task',
         includeCompanyTag: true,
         companyTagName: 'company',
     });
+    const TASK_NOTE_DIRECTORY = '02-Tasks/Bitrix';
     const SETTINGS_STORAGE_KEY = 'bitrix24-obsidian:settings';
     const DEDUPLICATION_INTERVAL_MS = 5000;
     const LAST_EXPORT_STORAGE_KEY = 'bitrix24-obsidian:last-export';
@@ -44,8 +43,12 @@
     const ATTACHMENT_DB = 'bitrix24-obsidian-attachments';
     const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'bmp', 'svg']);
     const pendingImages = new Map();
+    const pendingExports = new Map();
+    const taskTitles = new Map();
     let exportingImages = false;
     let retryImages = false;
+    let exportingEntries = false;
+    let retryEntries = false;
 
 
     function pad(number) {
@@ -69,12 +72,6 @@
 
         return {
             dailyNoteDirectory: dailyNoteDirectory || DEFAULT_SETTINGS.dailyNoteDirectory,
-            includeTaskTag: typeof settings.includeTaskTag === 'boolean'
-                ? settings.includeTaskTag
-                : DEFAULT_SETTINGS.includeTaskTag,
-            taskTagName: isTagName(settings.taskTagName)
-                ? settings.taskTagName
-                : DEFAULT_SETTINGS.taskTagName,
             includeCompanyTag: typeof settings.includeCompanyTag === 'boolean'
                 ? settings.includeCompanyTag
                 : DEFAULT_SETTINGS.includeCompanyTag,
@@ -134,13 +131,9 @@
 
     function formatEntry(entry, date, settings, taskDocument) {
         const value = entry.message.replace(/\r\n?/g, '\n').trim();
-        const tags = [
-            settings.includeTaskTag && entry.taskId ? `#${settings.taskTagName}/${entry.taskId}` : null,
-            ...companyTagsFromTask(taskDocument, entry.taskId, settings),
-        ].filter(Boolean);
-        const tagPrefix = tags.length > 0 ? `${tags.join(' ')} ` : '';
-
-        return `\n- ${pad(date.getHours())}:${pad(date.getMinutes())} ${tagPrefix}${value}`;
+        const taskLink = `[[${TASK_NOTE_DIRECTORY}/${entry.taskId}|№${entry.taskId}]]`;
+        const tags = companyTagsFromTask(taskDocument, entry.taskId, settings);
+        return `\n- ${pad(date.getHours())}:${pad(date.getMinutes())} ${taskLink} ${tags.length ? `${tags.join(' ')} ` : ''}${value}`;
     }
 
     function showSuccessNotification() {
@@ -202,7 +195,7 @@
             .join('&');
     }
 
-    function openObsidian(entry, taskDocument) {
+    function appendDailyEntry(entry, taskDocument) {
         if (!claimExport(entry)) {
             return;
         }
@@ -223,6 +216,14 @@
         link.click();
         link.remove();
         showSuccessNotification();
+    }
+
+    function openObsidian(entry, taskDocument) {
+        const key = `${entry.taskId}\u0000${entry.messageId ?? entry.message}`;
+        if (!pendingExports.has(key)) {
+            pendingExports.set(key, { entry, taskDocument });
+        }
+        exportPendingEntries();
     }
 
     function requestAction(url, method) {
@@ -308,10 +309,13 @@
         }
 
         if (request.action === TASK_GET_ACTION) {
-            const { id, chatId } = payload.data ?? {};
+            const { id, chatId, title } = payload.data ?? {};
             if (Number.isSafeInteger(Number(id)) && Number(id) > 0
                 && Number.isSafeInteger(Number(chatId)) && Number(chatId) > 0) {
                 taskChats.set(String(chatId), String(id));
+                if (typeof title === 'string' && title.trim()) {
+                    taskTitles.set(String(id), title.trim().replace(/\s+/g, ' '));
+                }
             }
             return;
         }
@@ -365,11 +369,11 @@
         });
     }
 
-    async function attachmentFolder() {
+    async function storedFolder(key) {
         const db = await attachmentDatabase();
         try {
             return await new Promise((resolve, reject) => {
-                const request = db.transaction('settings').objectStore('settings').get('folder');
+                const request = db.transaction('settings').objectStore('settings').get(key);
                 request.onsuccess = () => resolve(request.result);
                 request.onerror = () => reject(request.error);
             });
@@ -378,18 +382,128 @@
         }
     }
 
-    async function saveAttachmentFolder(folder) {
+    async function saveFolder(key, folder) {
         const db = await attachmentDatabase();
         try {
             await new Promise((resolve, reject) => {
                 const transaction = db.transaction('settings', 'readwrite');
-                transaction.objectStore('settings').put(folder, 'folder');
+                transaction.objectStore('settings').put(folder, key);
                 transaction.oncomplete = resolve;
                 transaction.onerror = () => reject(transaction.error);
                 transaction.onabort = () => reject(transaction.error);
             });
         } finally {
             db.close();
+        }
+    }
+
+    function taskNoteContent(entry, taskDocument) {
+        const title = taskTitles.get(String(entry.taskId)) ?? null;
+        const taskPath = taskDocument.URL
+            ? new URL(taskDocument.URL).pathname
+            : window.location.pathname;
+        const userId = taskPath.match(/\/company\/personal\/user\/(\d+)\//)?.[1]
+            ?? window.location.pathname.match(/\/company\/personal\/user\/(\d+)\//)?.[1];
+        const source = userId
+            ? `${window.location.origin}/company/personal/user/${userId}/tasks/task/view/${entry.taskId}/`
+            : null;
+        return `---\ntype: bitrix-task\nbitrix_id: ${entry.taskId}\ntitle: ${title ? JSON.stringify(title) : 'null'}\nsource: ${source ? JSON.stringify(source) : 'null'}\n---\n\n# ${title ?? `Задача №${entry.taskId} — название недоступно`}\n`;
+    }
+
+    async function ensureTaskNote(folder, entry, taskDocument) {
+        const name = `${entry.taskId}.md`;
+        try {
+            const existing = await folder.getFileHandle(name);
+            if ((await existing.getFile()).size === 0) {
+                throw new Error(`Карточка ${name} пуста; проверьте её перед повтором.`);
+            }
+            return;
+        } catch (error) {
+            if (error.name !== 'NotFoundError') {
+                throw error;
+            }
+        }
+        const handle = await folder.getFileHandle(name, { create: true });
+        let writable;
+        try {
+            writable = await handle.createWritable();
+            await writable.write(taskNoteContent(entry, taskDocument));
+            await writable.close();
+        } catch (error) {
+            try { await writable?.abort(); } catch { /* Preserve the write error. */ }
+            try { await folder.removeEntry(name); } catch { /* An empty card blocks a retry. */ }
+            throw error;
+        }
+    }
+
+    function showTaskPrompt(reason) {
+        let panel = document.getElementById('bitrix24-obsidian-tasks');
+        if (!panel) {
+            panel = document.createElement('div');
+            panel.id = 'bitrix24-obsidian-tasks';
+            panel.style.cssText = 'position:fixed;right:20px;bottom:20px;z-index:2147483647;padding:16px;max-width:360px;background:#18181b;color:#fafafa;border:1px solid #fca5a5;border-radius:8px;font:14px/1.4 sans-serif;';
+            const message = document.createElement('div');
+            message.className = 'task-message';
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.textContent = 'Выбрать папку 02-Tasks/Bitrix';
+            button.addEventListener('click', () => chooseTaskFolder(message));
+            panel.append(message, button);
+            (document.body || document.documentElement).append(panel);
+        }
+        panel.querySelector('.task-message').textContent = reason;
+    }
+
+    async function chooseTaskFolder(status) {
+        if (typeof window.showDirectoryPicker !== 'function') {
+            status.textContent = 'Для карточек задач нужен Chrome или Edge с доступом к папкам (HTTPS).';
+            return;
+        }
+        try {
+            const folder = await window.showDirectoryPicker({ mode: 'readwrite' });
+            if (folder.name !== 'Bitrix') {
+                status.textContent = 'Выберите именно папку 02-Tasks/Bitrix внутри vault Obsidian.';
+                return;
+            }
+            await saveFolder('taskFolder', folder);
+            status.textContent = `Папка задач: ${folder.name}`;
+            await exportPendingEntries();
+        } catch (error) {
+            if (error.name !== 'AbortError') {
+                status.textContent = `Не удалось выбрать папку задач: ${error.message}`;
+            }
+        }
+    }
+
+    async function exportPendingEntries() {
+        if (exportingEntries) {
+            retryEntries = true;
+            return;
+        }
+        exportingEntries = true;
+        try {
+            for (const [key, { entry, taskDocument }] of pendingExports) {
+                try {
+                    const folder = await storedFolder('taskFolder');
+                    if (!folder || await folder.queryPermission({ mode: 'readwrite' }) !== 'granted') {
+                        showTaskPrompt('Сообщение ожидает доступа к папке 02-Tasks/Bitrix внутри vault Obsidian.');
+                        break;
+                    }
+                    await ensureTaskNote(folder, entry, taskDocument);
+                    appendDailyEntry(entry, taskDocument);
+                    pendingExports.delete(key);
+                    document.getElementById('bitrix24-obsidian-tasks')?.remove();
+                } catch (error) {
+                    showTaskPrompt(`Карточка задачи не создана: ${error.message}. Выберите папку для повтора.`);
+                    break;
+                }
+            }
+        } finally {
+            exportingEntries = false;
+            if (retryEntries) {
+                retryEntries = false;
+                exportPendingEntries();
+            }
         }
     }
 
@@ -419,7 +533,7 @@
         try {
             // The picker must be called synchronously from the user's click.
             const folder = await window.showDirectoryPicker({ mode: 'readwrite' });
-            await saveAttachmentFolder(folder);
+            await saveFolder('folder', folder);
             status.textContent = `Папка вложений: ${folder.name}`;
             await exportPendingImages();
         } catch (error) {
@@ -447,7 +561,7 @@
         try {
             for (const [key, entry] of pendingImages) {
                 try {
-                    const folder = await attachmentFolder();
+                    const folder = await storedFolder('folder');
                     if (!folder || await folder.queryPermission({ mode: 'readwrite' }) !== 'granted') {
                         showAttachmentPrompt('Сообщение с изображением ожидает доступа к папке вложений внутри vault Obsidian.');
                         break;
@@ -502,7 +616,6 @@
         const panel = document.createElement('form');
         const fields = [
             ['Каталог daily notes', 'dailyNoteDirectory', 'text'],
-            ['Тег задачи', 'taskTagName', 'text'],
             ['Тег компании', 'companyTagName', 'text'],
         ];
         const inputs = {};
@@ -544,7 +657,7 @@
             inputs[name] = input;
         }
 
-        for (const [labelText, name] of [['Добавлять тег задачи', 'includeTaskTag'], ['Добавлять тег компании', 'includeCompanyTag']]) {
+        for (const [labelText, name] of [['Добавлять тег компании', 'includeCompanyTag']]) {
             const label = document.createElement('label');
             label.style.cssText = 'display:block;margin-top:12px;';
             const input = document.createElement('input');
@@ -557,11 +670,8 @@
         const preview = document.createElement('div');
         preview.style.cssText = 'margin-top:16px;padding:8px;background:#27272a;border-radius:4px;word-break:break-word;';
         const updatePreview = () => {
-            const tags = [
-                inputs.includeTaskTag.checked ? `#${inputs.taskTagName.value || 'task'}/123` : null,
-                inputs.includeCompanyTag.checked ? `#${inputs.companyTagName.value || 'company'}/Acme` : null,
-            ].filter(Boolean);
-            preview.textContent = `Пример: 12:34 ${tags.length ? `${tags.join(' ')} ` : ''}Сообщение`;
+            const tags = inputs.includeCompanyTag.checked ? `#${inputs.companyTagName.value || 'company'}/Acme ` : '';
+            preview.textContent = `Пример: 12:34 [[${TASK_NOTE_DIRECTORY}/123|№123]] ${tags}Сообщение`;
         };
         for (const input of Object.values(inputs)) {
             input.addEventListener('input', updatePreview);
@@ -579,11 +689,25 @@
         chooseFolder.textContent = 'Выбрать папку вложений Obsidian';
         chooseFolder.addEventListener('click', () => chooseAttachmentFolder(folderLabel));
         panel.append(folderLabel, chooseFolder);
-        attachmentFolder().then(folder => {
+        storedFolder('folder').then(folder => {
             if (folder) {
                 folderLabel.textContent = `Вложения: ${folder.name}`;
             }
         }).catch(error => { folderLabel.textContent = `Хранилище папки недоступно: ${error.message}`; });
+
+        const taskFolderLabel = document.createElement('div');
+        taskFolderLabel.style.marginTop = '12px';
+        taskFolderLabel.textContent = 'Карточки задач: папка не выбрана';
+        const chooseTasks = document.createElement('button');
+        chooseTasks.type = 'button';
+        chooseTasks.textContent = 'Выбрать папку 02-Tasks/Bitrix';
+        chooseTasks.addEventListener('click', () => chooseTaskFolder(taskFolderLabel));
+        panel.append(taskFolderLabel, chooseTasks);
+        storedFolder('taskFolder').then(folder => {
+            if (folder) {
+                taskFolderLabel.textContent = `Карточки задач: ${folder.name}`;
+            }
+        }).catch(error => { taskFolderLabel.textContent = `Хранилище папки недоступно: ${error.message}`; });
         const error = document.createElement('div');
         error.style.cssText = 'color:#fca5a5;margin-top:12px;min-height:20px;';
         panel.append(error);
@@ -613,15 +737,13 @@
                 error.textContent = 'Укажите каталог daily notes.';
                 return;
             }
-            if (!isTagName(inputs.taskTagName.value) || !isTagName(inputs.companyTagName.value)) {
+            if (!isTagName(inputs.companyTagName.value)) {
                 error.textContent = 'Имя тега: буквы, цифры, _, -, и /; без #.';
                 return;
             }
 
             saveSettings({
                 dailyNoteDirectory,
-                includeTaskTag: inputs.includeTaskTag.checked,
-                taskTagName: inputs.taskTagName.value,
                 includeCompanyTag: inputs.includeCompanyTag.checked,
                 companyTagName: inputs.companyTagName.value,
             });

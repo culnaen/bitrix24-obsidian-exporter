@@ -23,13 +23,16 @@ function imageCommit(messageId, files) {
 }
 
 
-function createEnvironment({ payload = { status: 'success', data: { id: 1376900 } }, settings, isTopFrame = true, hasTaskFrame = false, crmItems = [], frameCrmItems = crmItems, folder = null, downloadResponse } = {}) {
+function createEnvironment({ payload = { status: 'success', data: { id: 1376900 } }, settings, isTopFrame = true, hasTaskFrame = false, crmItems = [], frameCrmItems = crmItems, folder = null, taskFolder = writableTaskFolder().folder, downloadResponse } = {}) {
     const openedUris = [];
     const storage = new Map();
     const scriptStorage = new Map();
     const eventListeners = new WeakMap();
     const elements = new Map();
-    const databaseValues = new Map(folder ? [['folder', folder]] : []);
+    const databaseValues = new Map([
+        ...(folder ? [['folder', folder]] : []),
+        ...(taskFolder ? [['taskFolder', taskFolder]] : []),
+    ]);
     const indexedDB = {
         open() {
             const request = { result: {
@@ -92,7 +95,7 @@ function createEnvironment({ payload = { status: 'success', data: { id: 1376900 
         send(body) {
             this.body = body;
             const result = this.url?.includes('tasks.v2.Task.get')
-                ? { status: 'success', data: { id: 42, chatId: 11784 } }
+                ? { status: 'success', data: { id: 42, chatId: 11784, title: 'Не работает интернет' } }
                 : payload;
             this.responseText = JSON.stringify(result);
             this.response = result;
@@ -169,7 +172,7 @@ function createEnvironment({ payload = { status: 'success', data: { id: 1376900 
     };
     const window = {
         document,
-        location: { href: 'https://acme.bitrix24.ru/tasks/task/view/42/', origin: 'https://acme.bitrix24.ru' },
+        location: { href: 'https://acme.bitrix24.ru/company/personal/user/26/tasks/task/view/42/', pathname: '/company/personal/user/26/tasks/task/view/42/', origin: 'https://acme.bitrix24.ru' },
         sessionStorage: {
             getItem(key) {
                 return storage.get(key) ?? null;
@@ -188,7 +191,7 @@ function createEnvironment({ payload = { status: 'success', data: { id: 1376900 
                 };
             }
             const result = String(url).includes('tasks.v2.Task.get')
-                ? { status: 'success', data: { id: 42, chatId: 11784 } }
+                ? { status: 'success', data: { id: 42, chatId: 11784, title: 'Не работает интернет' } }
                 : payload;
             return new Response(JSON.stringify(result), {
                 status: 200,
@@ -245,6 +248,7 @@ function createEnvironment({ payload = { status: 'success', data: { id: 1376900 
         openedUris,
         elements,
         databaseValues,
+        taskFiles: taskFolder?.files,
         window,
     };
 }
@@ -253,7 +257,7 @@ function assertExported(uri) {
     assert.ok(uri?.startsWith('obsidian://new?'), 'Obsidian URI should be opened');
     const query = new URL(uri).searchParams;
     assert.match(query.get('file'), /^03-Daily\/\d{4}-\d{2}-\d{2}\.md$/);
-    assert.match(query.get('content'), /#task\/42 exported message/);
+    assert.match(query.get('content'), /\[\[02-Tasks\/Bitrix\/42\|№42\]\] exported message/);
 }
 
 function send(Xhr, url, body) {
@@ -270,8 +274,8 @@ test('does not export from an independently injected nested frame', () => {
     assert.equal(nested.openedUris.length, 0);
 });
 
-test('exports only confirmed messages from the task-linked chat', () => {
-    const { MockXMLHttpRequest, openedUris } = createEnvironment();
+test('exports only confirmed messages from the task-linked chat', async () => {
+    const { MockXMLHttpRequest, openedUris, taskFiles } = createEnvironment();
     send(MockXMLHttpRequest, sendEndpoint, messageBody);
     assert.equal(openedUris.length, 0, 'no export before task/chat association arrives');
 
@@ -279,11 +283,13 @@ test('exports only confirmed messages from the task-linked chat', () => {
     send(MockXMLHttpRequest, sendEndpoint, 'dialogId=chat999&fields%5Bmessage%5D=other+chat');
     assert.equal(openedUris.length, 0, 'other chat must not be exported');
     send(MockXMLHttpRequest, sendEndpoint, messageBody);
+    await settle();
     assertExported(openedUris[0]);
     assert.equal(openedUris.length, 1);
+    assert.match(taskFiles.get('42.md'), /bitrix_id: 42\ntitle: "Не работает интернет"/);
 });
 
-test('exports the company from the task side slider, not the parent page', () => {
+test('exports the company from the task side slider, not the parent page', async () => {
     const { openedUris, taskFrameWindow } = createEnvironment({
         hasTaskFrame: true,
         crmItems: [['Компания', 'Чужая компания']],
@@ -291,14 +297,14 @@ test('exports the company from the task side slider, not the parent page', () =>
     });
     send(taskFrameWindow.XMLHttpRequest, taskEndpoint);
     send(taskFrameWindow.XMLHttpRequest, sendEndpoint, messageBody);
+    await settle();
     const content = new URL(openedUris[0]).searchParams.get('content');
-    assert.match(content, /#task\/42 #company\/ООО_ЛАСНЕТ exported message/);
+    assert.match(content, /\[\[02-Tasks\/Bitrix\/42\|№42\]\] #company\/ООО_ЛАСНЕТ exported message/);
     assert.doesNotMatch(content, /Чужая/);
 });
 
-test('adds linked companies beside a custom task tag, never the contact', () => {
+test('adds linked companies beside the task link, never the contact', async () => {
     const { MockXMLHttpRequest, openedUris } = createEnvironment({
-        settings: { taskTagName: 'lasnet' },
         crmItems: [
             ['Контакт', 'Чубаров Владлен'],
             ['Компания', 'ООО "ЛАСНЕТ"'],
@@ -308,21 +314,23 @@ test('adds linked companies beside a custom task tag, never the contact', () => 
     });
     send(MockXMLHttpRequest, taskEndpoint);
     send(MockXMLHttpRequest, sendEndpoint, messageBody);
+    await settle();
     const content = new URL(openedUris[0]).searchParams.get('content');
-    assert.match(content, /#lasnet\/42 #company\/ООО_ЛАСНЕТ #company\/Рога_Копыта exported message/);
+    assert.match(content, /\[\[02-Tasks\/Bitrix\/42\|№42\]\] #company\/ООО_ЛАСНЕТ #company\/Рога_Копыта exported message/);
     assert.doesNotMatch(content, /Чубаров|#contact/);
     assert.equal(content.match(/#company\//g).length, 2);
 });
 
-test('omits company tags when disabled, including when a contact exists', () => {
+test('omits company tags when disabled, including when a contact exists', async () => {
     const { MockXMLHttpRequest, openedUris } = createEnvironment({
         settings: { includeCompanyTag: false },
         crmItems: [['Компания', 'ООО "ЛАСНЕТ"'], ['Контакт', 'Чубаров Владлен']],
     });
     send(MockXMLHttpRequest, taskEndpoint);
     send(MockXMLHttpRequest, sendEndpoint, messageBody);
+    await settle();
     const content = new URL(openedUris[0]).searchParams.get('content');
-    assert.match(content, /#task\/42 exported message/);
+    assert.match(content, /\[\[02-Tasks\/Bitrix\/42\|№42\]\] exported message/);
     assert.doesNotMatch(content, /#company|#contact|ЛАСНЕТ|Чубаров/);
 });
 
@@ -330,30 +338,89 @@ test('exports fetch messages without consuming the response', async () => {
     const { openedUris, window } = createEnvironment();
     await window.fetch(taskEndpoint, { method: 'POST' });
     const response = await window.fetch(sendEndpoint, { method: 'POST', body: messageBody });
+    await settle();
     assertExported(openedUris[0]);
     assert.deepEqual(await response.json(), { status: 'success', data: { id: 1376900 } });
 });
 
-test('uses saved export settings and custom task tags', () => {
+test('uses saved daily directory while preserving the task link', async () => {
     const { MockXMLHttpRequest, openedUris } = createEnvironment({
         settings: {
             dailyNoteDirectory: 'Journal/Daily',
-            includeTaskTag: false,
             includeCompanyTag: false,
         },
     });
     send(MockXMLHttpRequest, taskEndpoint);
     send(MockXMLHttpRequest, sendEndpoint, messageBody);
+    await settle();
     const query = new URL(openedUris[0]).searchParams;
     assert.match(query.get('file'), /^Journal\/Daily\/\d{4}-\d{2}-\d{2}\.md$/);
-    assert.doesNotMatch(query.get('content'), /#task\/42/);
-    assert.match(query.get('content'), /exported message/);
-
-    const custom = createEnvironment({ settings: { taskTagName: 'project/task' } });
-    send(custom.MockXMLHttpRequest, taskEndpoint);
-    send(custom.MockXMLHttpRequest, sendEndpoint, messageBody);
-    assert.match(new URL(custom.openedUris[0]).searchParams.get('content'), /#project\/task\/42 exported message/);
+    assert.match(query.get('content'), /\[\[02-Tasks\/Bitrix\/42\|№42\]\] exported message/);
+    assert.doesNotMatch(query.get('content'), /#company/);
 });
+
+test('creates a titled task card before opening a daily link, without overwriting existing notes', async () => {
+    const { folder, files } = writableTaskFolder();
+    const payload = { status: 'success', data: { id: 1376900 } };
+    const env = createEnvironment({ taskFolder: folder, payload });
+    send(env.MockXMLHttpRequest, taskEndpoint);
+    send(env.MockXMLHttpRequest, sendEndpoint, messageBody);
+    await settle();
+    assert.match(files.get('42.md'), /title: "Не работает интернет"\nsource: "https:\/\/acme\.bitrix24\.ru\/company\/personal\/user\/26\/tasks\/task\/view\/42\/"/);
+    assertExported(env.openedUris[0]);
+
+    files.set('42.md', 'My existing task notes');
+    payload.data.id = 1376901;
+    send(env.MockXMLHttpRequest, sendEndpoint, 'dialogId=chat11784&fields%5Bmessage%5D=second+message');
+    await settle();
+    assert.equal(files.get('42.md'), 'My existing task notes');
+    assert.match(new URL(env.openedUris[1]).searchParams.get('content'), /\[\[02-Tasks\/Bitrix\/42\|№42\]\] second message/);
+});
+
+test('keeps a confirmed message pending until the task folder is selected', async () => {
+    const env = createEnvironment({ taskFolder: null });
+    send(env.MockXMLHttpRequest, taskEndpoint);
+    send(env.MockXMLHttpRequest, sendEndpoint, messageBody);
+    await settle();
+    assert.equal(env.openedUris.length, 0);
+    const panel = env.elements.get('bitrix24-obsidian-tasks');
+    assert.match(panel.children[0].textContent, /ожидает доступа/);
+
+    const { folder, files } = writableTaskFolder();
+    env.window.showDirectoryPicker = () => Promise.resolve(folder);
+    panel.children[1].click();
+    await settle();
+    assert.match(files.get('42.md'), /bitrix_id: 42/);
+    assertExported(env.openedUris[0]);
+    assert.equal(env.elements.has('bitrix24-obsidian-tasks'), false);
+});
+
+test('does not link a partial task card after a failed write and retries safely', async () => {
+    const { folder, files } = writableTaskFolder();
+    const getFileHandle = folder.getFileHandle.bind(folder);
+    let fail = true;
+    folder.getFileHandle = async (name, options) => {
+        const handle = await getFileHandle(name, options);
+        if (options?.create && fail) {
+            return { createWritable: async () => { fail = false; throw new Error('disk full'); } };
+        }
+        return handle;
+    };
+    const env = createEnvironment({ taskFolder: folder });
+    send(env.MockXMLHttpRequest, taskEndpoint);
+    send(env.MockXMLHttpRequest, sendEndpoint, messageBody);
+    await settle();
+    assert.equal(env.openedUris.length, 0);
+    assert.equal(files.has('42.md'), false);
+
+    const panel = env.elements.get('bitrix24-obsidian-tasks');
+    assert.match(panel.children[0].textContent, /disk full/);
+    env.window.showDirectoryPicker = () => Promise.resolve(folder);
+    panel.children[1].click();
+    await settle();
+    assertExported(env.openedUris[0]);
+});
+
 
 test('does not export rejected, empty, unrelated, or legacy forum submissions', async () => {
     const { MockXMLHttpRequest, openedUris, window } = createEnvironment({ payload: { status: 'error' } });
@@ -369,6 +436,36 @@ test('does not export rejected, empty, unrelated, or legacy forum submissions', 
     send(valid.MockXMLHttpRequest, 'https://acme.bitrix24.ru/bitrix/services/main/ajax.php?c=bitrix%3Aforum.comments&action=processComment', 'ENTITY_XML_ID=TASK_42&POST_MESSAGE=legacy');
     assert.equal(valid.openedUris.length, 0);
 });
+
+function writableTaskFolder() {
+    const files = new Map();
+    const folder = {
+        name: 'Bitrix',
+        files,
+        permission: 'granted',
+        async queryPermission() { return this.permission; },
+        async getFileHandle(name, { create = false } = {}) {
+            if (!files.has(name) && !create) {
+                const error = new Error('File not found');
+                error.name = 'NotFoundError';
+                throw error;
+            }
+            if (!files.has(name)) files.set(name, '');
+            return {
+                async getFile() { return { size: files.get(name).length }; },
+                async createWritable() {
+                    return {
+                        async write(text) { files.set(name, text); },
+                        async close() {},
+                        async abort() { files.delete(name); },
+                    };
+                },
+            };
+        },
+        async removeEntry(name) { files.delete(name); },
+    };
+    return { folder, files };
+}
 
 function writableFolder() {
     const files = new Map();
@@ -402,7 +499,7 @@ test('copies image-only and captioned multiple images before linking them in the
     send(env.MockXMLHttpRequest, imageEndpoint, imageBody);
     await settle();
     const first = new URL(env.openedUris[0]).searchParams.get('content');
-    assert.match(first, /#task\/42 !\[\[bitrix-task-42-message-1377256-file-401\.png\]\]/);
+    assert.match(first, /\[\[02-Tasks\/Bitrix\/42\|№42\]\] !\[\[bitrix-task-42-message-1377256-file-401\.png\]\]/);
     assert.match(first, /\n  !\[\[bitrix-task-42-message-1377256-file-402\.png\]\]/);
     assert.equal(await files.get('bitrix-task-42-message-1377256-file-401.png').text(), 'image bytes');
     assert.equal(files.size, 2);
@@ -416,7 +513,7 @@ test('copies image-only and captioned multiple images before linking them in the
     send(captioned.MockXMLHttpRequest, imageEndpoint, 'chat_id=11784&message=photo+caption');
     await settle();
     assert.match(new URL(captioned.openedUris[0]).searchParams.get('content'),
-        /#task\/42 photo caption\n  !\[\[bitrix-task-42-message-1377257-file-403\.png\]\]/);
+        /\[\[02-Tasks\/Bitrix\/42\|№42\]\] photo caption\n  !\[\[bitrix-task-42-message-1377257-file-403\.png\]\]/);
 });
 
 test('keeps image pending until user selects a writable folder', async () => {
